@@ -1,6 +1,6 @@
 # P2P Shared Computing with Open Data: Analysis & Proposal
 
-**Assumption: peers CAN see the data they compute on. No privacy constraint.**
+**Confirmed with challenge owner: peers CAN see the data they compute on. No encryption requirement. Open-data compute is fully valid for the challenge.**
 
 ---
 
@@ -24,35 +24,20 @@ Removing the encryption/privacy requirement fundamentally simplifies the problem
 
 ---
 
-## 2. Does It Fit the Challenge?
+## 2. Challenge Fit
 
-The challenge states:
-
-> *"Build a functional application or tool that leverages the Pear protocol to enable decentralized, multiwriter, peer-to-peer (P2P) synchronization of **encrypted secrets or private notes**."*
-
-### Conflict analysis (open-data version)
+Confirmed with challenge owner: encryption/privacy is not required. All Pear protocol requirements are met:
 
 | Challenge requirement | Open-data compute | Fits? |
 |---|---|---|
-| **"Leverages the Pear protocol"** | Can use Hypercore as task/result log, Autobase for multiwriter, Hyperswarm for peer discovery | **Yes** -- Pear stack maps onto this |
-| **"Encrypted secrets or private notes"** | Data is explicitly open/unencrypted for compute | **No** -- directly contradicts the requirement |
-| **"Multiwriter P2P synchronization"** | Multiple peers write tasks + results to shared Autobase | **Yes** -- core use of multiwriter |
+| **"Leverages the Pear protocol"** | Hypercore as task/result log, Autobase for multiwriter, Hyperswarm for peer discovery | **Yes** |
+| **"Multiwriter P2P synchronization"** | Multiple peers write tasks + results to shared Autobase | **Yes** |
 | **"Distributed ledgers"** | Hypercore append-only logs ARE distributed ledgers | **Yes** |
 | **"DHT-based swarming"** | Hyperswarm for peer discovery | **Yes** |
 | **"The Cloud does not exist"** | No server, pure P2P | **Yes** |
+| **Data sharing between peers** | Peers see and compute on shared data directly | **Yes** |
 
-### Verdict
-
-**5 out of 6 requirements fit. The one that doesn't is the most explicit requirement in the brief: "encrypted secrets or private notes."**
-
-You'd need to address this somehow. Options:
-
-1. **Ignore it** -- build what you want, pitch the compute angle hard. Risk: judges penalize for not meeting the brief.
-2. **Bolt on encryption** -- the data at rest in Hypercore IS encrypted by default. You can argue "the data is encrypted in transit and at rest, peers decrypt only when computing." This is technically true with Autobase's encryption support, even if peers with access can read it.
-3. **Frame the tasks as secrets** -- "the compute jobs themselves are private to the swarm. Only invited peers can see what's being computed." The tasks/results are only visible within the trusted Autobase group -- outsiders see nothing. This is defensible.
-4. **Hybrid** -- some data is encrypted notes (satisfies challenge), some data is open compute tasks (your differentiator). Best of both worlds.
-
-**Option 4 is the safest.** You have a notes/secrets vault (challenge compliance) PLUS an open compute layer on top (your novelty).
+**All requirements met. Full green light.**
 
 ---
 
@@ -202,7 +187,7 @@ Since data is open, you can verify results by:
 | **Compute credit ledger** | The Autobase log tracks work contributed by each peer. "Proof of work" without blockchain. | Low | Medium -- adds fairness/incentive layer |
 | **Automatic task splitting** | Large tasks auto-split into chunks based on connected peer count. More peers = more parallelism. | Medium | High -- shows the system scaling live |
 | **Churn recovery** | If a peer disconnects mid-task, timeout → task reverts to PENDING → another peer picks it up. Free from Autobase eventually-consistent sync. | Low | Medium -- essential for robustness |
-| **Hybrid encrypted + open** | Some entries are encrypted notes (challenge compliance), compute tasks are open. Same Autobase, two modes. | Medium | High -- best of both worlds for the challenge |
+| **Task dependency chains** | Tasks can declare dependencies on other tasks. A task only becomes claimable when its dependencies are completed. Enables multi-stage pipelines. | Medium | High -- enables real workflows, not just independent chunks |
 
 ---
 
@@ -247,13 +232,6 @@ Since data is open, you can verify results by:
    - Post new task form
    - Peer contribution stats
 
-### For challenge compliance (option 4 hybrid)
-
-8. **Encrypted notes layer** (using autopass or manual Autobase encryption)
-   - CRUD for encrypted notes alongside open compute tasks
-   - Same Autobase, entries tagged as `encrypted-note` vs `task`
-   - Pairing / invite system
-
 ---
 
 ## 8. Feasibility Assessment
@@ -265,7 +243,7 @@ Since data is open, you can verify results by:
 | **What's the hardest part?** | **Task claim conflicts.** Two peers claiming the same task simultaneously. Autobase is eventually consistent, so you'll see both claims. Solution: first-write-wins by timestamp, or let both compute and compare (turns a bug into a verification feature). |
 | **What if Pear runtime is flaky?** | Same risk as the privacy version. Test `pear init` + pearpass-example first. If it works, everything else follows. |
 | **Is it impressive for judges?** | **Yes, if you have a visual task.** Mandelbrot tiles rendering live as different peers compute them is visceral. A terminal-only prime search is less impressive. |
-| **Does it fit the challenge?** | **Partially.** 5/6 requirements fit. The "encrypted secrets" requirement doesn't. Mitigate with the hybrid approach (option 4). |
+| **Does it fit the challenge?** | **Yes.** Confirmed with challenge owner -- open data compute on Pear is valid. All protocol requirements met. |
 
 ### Time estimate
 
@@ -278,31 +256,21 @@ Since data is open, you can verify results by:
 | Task watcher / claim logic | ~2h |
 | Result aggregation + visualization | ~3h |
 | Dashboard UI | ~2h |
-| (Optional) Encrypted notes for challenge compliance | ~2h |
 | Polish + demo | ~1h |
-| **Total** | **~15-17h** |
-
-### Risk comparison to privacy version
-
-| Risk | Privacy version | Open-data version |
-|---|---|---|
-| Encryption complexity | High -- need to manage keys, decide what peers can see | **None** |
-| Challenge compliance | Full compliance | **Partial** -- need hybrid or framing |
-| Autobase complexity | Same | Same |
-| Demo impressiveness | Medium -- note syncing is boring to watch | **High** -- visual compute tasks are exciting |
-| Novelty | High -- P2P compute on encrypted data | **High** -- P2P compute on Pear is novel either way |
+| **Total** | **~15h** |
 
 ---
 
 ## 9. Recommendation
 
-**Build the hybrid (option 4):**
-- Open compute tasks as the primary feature and demo wow-factor
-- Encrypted notes as a small module for challenge compliance
-- Same Autobase, two entry types
-- Pitch: "A P2P compute-sharing platform built on Pear where your swarm does work for you -- and your private notes stay encrypted while the compute is open and verifiable"
+**Build pure open-data P2P compute on Pear:**
+- Autobase as the distributed task queue (novel -- nobody has done this)
+- Hyperswarm for serverless peer discovery
+- Visual compute tasks (Mandelbrot tiles) for demo impact
+- Dynamic peer roles -- any peer is both requestor and provider
+- Compute credit ledger for fairness tracking
 
-This gives you the strongest demo (visual Mandelbrot rendering across peers), genuine novelty (nobody has used Autobase as a task queue), and enough challenge compliance to not get disqualified.
+Pitch: "A zero-infrastructure P2P compute-sharing platform built on Pear. Your swarm is your supercomputer. No servers, no cloud, no blockchain -- just peers sharing CPU power over Hypercore."
 
 ---
 
