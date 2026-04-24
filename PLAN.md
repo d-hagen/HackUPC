@@ -1,5 +1,16 @@
 # Creative Intelligence — Smadex Hackathon
 
+## Edge
+Not just "what happened" — answer **why**, **what will happen**, and **what to do next**.
+
+## Specific Focus
+**Why is stuff failing?** — diagnose underperforming creatives, not just flag them.
+
+## Ideas
+- **Predictive performance** — forecast creative fatigue before it happens
+  - Approaches: CNN on visuals, LLM reasoning, ML models + tag-based stats
+- **Automated creative reasoning** — LLM explains *why* a creative works or doesn't
+
 ## Approaches
 1. Pure statistical analysis — rank creatives by metrics, detect outliers
 2. AI model for similarity detection — embeddings + clustering for repetitiveness
