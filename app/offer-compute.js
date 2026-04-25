@@ -27,7 +27,17 @@ const BOOTSTRAP = process.env.BOOTSTRAP
 const swarmOpts = BOOTSTRAP
   ? { bootstrap: [{ host: BOOTSTRAP.split(':')[0], port: Number(BOOTSTRAP.split(':')[1]) }] }
   : {}
-const swarm = new Hyperswarm(swarmOpts)
+
+// --- Two swarms: discovery (JSON signaling) and replication (Autobase sync) ---
+// They MUST be separate because raw JSON writes and Protomux-based Autobase
+// replication corrupt each other when sharing a connection.
+
+const discoverySwarm = new Hyperswarm(swarmOpts)
+const replicationSwarm = new Hyperswarm(swarmOpts)
+
+replicationSwarm.on('connection', (conn) => {
+  if (store) store.replicate(conn)
+})
 
 function open (s) { return s.get('view', { valueEncoding: 'json' }) }
 async function apply (nodes, view, b) {
@@ -70,9 +80,9 @@ async function leaveCurrentRequester () {
 
   const leavingId = currentRequester
 
-  // Leave old autobase discovery topic
+  // Leave Autobase replication topic on the replication swarm
   if (currentDiscoveryKey) {
-    swarm.leave(currentDiscoveryKey)
+    replicationSwarm.leave(currentDiscoveryKey)
     currentDiscoveryKey = null
   }
 
@@ -118,14 +128,15 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   await outputDrive.ready()
   mountedDrives.clear()
 
-  // Request to join
+  // Request to join (JSON on discovery connection — safe, no replication here)
   conn.write(JSON.stringify({
     type: 'join-request', role: 'worker', writerKey, workerId
   }))
 
-  // Replicate (Corestore replicates all cores including drives)
-  base.replicate(conn)
-  swarm.join(base.discoveryKey, { client: true, server: true })
+  // Join the Autobase topic on the REPLICATION swarm (separate from discovery)
+  // This creates a fresh connection to the requester, used only for binary
+  // Autobase/Corestore protocol — no JSON interference.
+  replicationSwarm.join(base.discoveryKey, { client: true, server: true })
 
   // Watch for tasks on new updates
   base.on('update', async () => {
@@ -134,16 +145,13 @@ async function joinRequester (requesterId, autobaseKey, conn) {
     }
   })
 
-  // Poll every 2s to catch tasks already in the log before we joined.
-  // The 'update' event alone misses these because base.writable isn't true
-  // at the moment the initial sync fires the event.
+  // Poll every 2s to catch tasks already in the log before we joined
   if (taskPollTimer) clearInterval(taskPollTimer)
   taskPollTimer = setInterval(async () => {
     if (!base || searching) { clearInterval(taskPollTimer); taskPollTimer = null; return }
     try {
       await base.update()
       if (base.writable) {
-        console.log(`[…] Poll: view=${base.view.length}, writable=${base.writable}`)
         await processTasks()
       }
     } catch {}
@@ -295,10 +303,10 @@ function pickBestRequester () {
   }
 }
 
-// Join well-known topic to find requesters
-swarm.join(NETWORK_TOPIC, { client: true, server: true })
+// Join well-known topic on DISCOVERY swarm only (JSON signaling, no replication)
+discoverySwarm.join(NETWORK_TOPIC, { client: true, server: true })
 
-swarm.on('connection', (conn) => {
+discoverySwarm.on('connection', (conn) => {
   conn.on('data', async (data) => {
     try {
       const msg = JSON.parse(data.toString())
@@ -332,13 +340,10 @@ swarm.on('connection', (conn) => {
     } catch {}
   })
 
-  // If we already have a base, replicate on new connections
-  if (base) {
-    base.replicate(conn)
-  }
+  // NO replication on discovery connections
 })
 
-await swarm.flush()
+await discoverySwarm.flush()
 console.log('Listening for requesters on network...\n')
 
 // Periodically check for requesters if searching
@@ -350,7 +355,9 @@ process.on('SIGINT', async () => {
   const rep = loadReputation()
   console.log(`\nShutting down… (${totalTasksDone} tasks completed, reputation: score=${getScore(rep)})`)
   if (idleTimer) clearTimeout(idleTimer)
-  await swarm.destroy()
+  if (taskPollTimer) clearInterval(taskPollTimer)
+  await discoverySwarm.destroy()
+  await replicationSwarm.destroy()
   if (base) try { await base.close() } catch {}
   fs.rmSync(storePath, { recursive: true, force: true })
   process.exit()

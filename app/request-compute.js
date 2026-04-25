@@ -6,11 +6,12 @@ import { resolve } from 'path'
 import crypto from 'crypto'
 import fs from 'fs'
 import readline from 'readline'
+import Hyperswarm from 'hyperswarm'
 
 import { basename } from 'path'
 
 const requesterId = `requester-${crypto.randomUUID().slice(0, 8)}`
-const { base, swarm, drive, cleanup } = await createBase('./store-requester', null)
+const { base, swarm: replicationSwarm, store, drive, cleanup } = await createBase('./store-requester', null)
 const autobaseKey = base.key.toString('hex')
 const driveKey = drive.key.toString('hex')
 
@@ -30,8 +31,22 @@ let pendingTaskCount = 0
 
 function findJobForTask (taskId) { return taskToJob.get(taskId) || null }
 
-// Advertise on NETWORK_TOPIC so workers can find us
-swarm.join(NETWORK_TOPIC, { client: true, server: true })
+// --- Two swarms: discovery (JSON messaging) and replication (Autobase sync) ---
+
+const BOOTSTRAP = process.env.BOOTSTRAP
+const swarmOpts = BOOTSTRAP
+  ? { bootstrap: [{ host: BOOTSTRAP.split(':')[0], port: Number(BOOTSTRAP.split(':')[1]) }] }
+  : {}
+
+// Discovery swarm: NETWORK_TOPIC only, for advertisements and join handshake
+const discoverySwarm = new Hyperswarm(swarmOpts)
+discoverySwarm.join(NETWORK_TOPIC, { client: true, server: true })
+
+// Replication swarm: base.discoveryKey only, for Autobase sync
+replicationSwarm.join(base.discoveryKey, { client: true, server: true })
+replicationSwarm.on('connection', (conn) => {
+  store.replicate(conn)
+})
 
 // Periodically re-broadcast availability
 const broadcastConns = new Set()
@@ -52,7 +67,7 @@ function broadcast () {
   }
 }
 
-swarm.on('connection', (conn) => {
+discoverySwarm.on('connection', (conn) => {
   broadcastConns.add(conn)
   conn.on('close', () => broadcastConns.delete(conn))
   conn.on('error', () => broadcastConns.delete(conn))
@@ -86,11 +101,11 @@ swarm.on('connection', (conn) => {
     } catch {}
   })
 
-  // Replicate autobase
-  base.replicate(conn)
+  // NO replication on discovery connections
 })
 
-await swarm.flush()
+await discoverySwarm.flush()
+await replicationSwarm.flush()
 console.log('Advertising on network, waiting for workers...\n')
 
 // Watch for results
@@ -364,7 +379,7 @@ rl.on('line', async (line) => {
       if (entry.type === 'result' && entry.driveKey && entry.outputFiles) {
         if (entry.outputFiles.includes(remotePath)) {
           try {
-            const workerDrive = new (await import('hyperdrive')).default(drive.corestore, Buffer.from(entry.driveKey, 'hex'))
+            const workerDrive = new (await import('hyperdrive')).default(store, Buffer.from(entry.driveKey, 'hex'))
             await workerDrive.ready()
             const data = await workerDrive.get(remotePath)
             const localName = basename(remotePath)
@@ -413,6 +428,7 @@ rl.on('line', async (line) => {
 
 rl.on('close', async () => {
   console.log('\nShutting down...')
+  await discoverySwarm.destroy()
   await cleanup()
   process.exit()
 })
