@@ -1,316 +1,199 @@
-# P2P Shared Computing with Open Data: Analysis & Proposal
+# PeerCompute — Project Snapshot & Roadmap
 
-**Confirmed with challenge owner: peers CAN see the data they compute on. No encryption requirement. Open-data compute is fully valid for the challenge.**
-
----
-
-## 1. What Changes When You Drop Privacy
-
-Removing the encryption/privacy requirement fundamentally simplifies the problem:
-
-| With privacy | Without privacy |
-|---|---|
-| Need homomorphic encryption, MPC, or TEEs to compute on hidden data | Peers just... run the code on the data directly |
-| Trust is a hard cryptographic problem | Trust is a social/reputational problem (much simpler) |
-| Limited to trusted peers only (invite-based) | Any peer can contribute compute |
-| Result verification requires complex proofs | Result verification via redundant computation (send same task to 2+ peers, compare) |
-| Massive overhead from encryption | Zero overhead from encryption |
-| Restricts what computations are possible | Any computation is possible |
-
-**This is the model BOINC, Folding@Home, and Golem all use.** The data is open. Peers see everything. The only concerns are:
-1. Is the peer returning correct results? (verification)
-2. Is the peer actually doing work? (freeloading)
-3. Will the peer stay online? (churn/reliability)
+**P2P shared computing platform on the Pear protocol. No servers, no cloud — peers share CPU power over Hypercore.**
 
 ---
 
-## 2. Challenge Fit
+## What's Built (Working)
 
-Confirmed with challenge owner: encryption/privacy is not required. All Pear protocol requirements are met:
-
-| Challenge requirement | Open-data compute | Fits? |
+### Core System
+| Component | File | Status |
 |---|---|---|
-| **"Leverages the Pear protocol"** | Hypercore as task/result log, Autobase for multiwriter, Hyperswarm for peer discovery | **Yes** |
-| **"Multiwriter P2P synchronization"** | Multiple peers write tasks + results to shared Autobase | **Yes** |
-| **"Distributed ledgers"** | Hypercore append-only logs ARE distributed ledgers | **Yes** |
-| **"DHT-based swarming"** | Hyperswarm for peer discovery | **Yes** |
-| **"The Cloud does not exist"** | No server, pure P2P | **Yes** |
-| **Data sharing between peers** | Peers see and compute on shared data directly | **Yes** |
+| **Requester CLI** | `request-compute.js` | Done — hosts Autobase, advertises on network, assigns tasks, collects results |
+| **Worker CLI** | `offer-compute.js` | Done — discovers requesters, joins, executes tasks, roams when idle |
+| **Generic task executor** | `worker.js` | Done — runs arbitrary JS function bodies via `AsyncFunction` |
+| **Shared Autobase setup** | `base-setup.js` | Done — creates Autobase + Hyperswarm, handles local/public DHT |
+| **Reputation system** | `reputation.js` | Done — local ledger (donated/consumed), score broadcast in advertisements |
 
-**All requirements met. Full green light.**
-
----
-
-## 3. Existing Implementations & Literature
-
-### Distributed compute with open data (no privacy layer)
-
-| Project | Architecture | Open data? | Server? | Status |
-|---|---|---|---|---|
-| **[BOINC](https://boinc.berkeley.edu/)** | Central server distributes work units to volunteer clients | Yes -- work units are open | **Yes** -- central server required | Production, 800K+ volunteers |
-| **[Folding@Home](https://foldingathome.org/)** | Central server assigns protein folding tasks | Yes -- scientific data is open | **Yes** -- central server | Production, 1M+ contributors |
-| **[Golem Network](https://golem.network/)** | P2P marketplace, requestors submit tasks, providers execute in Docker | Yes -- provider sees task data | **No** -- P2P with Ethereum settlement | Production (CPU), GPU beta |
-| **[iExec](https://iexec.io/)** | Decentralized compute marketplace with worker pools | Partial -- supports TEEs but also open mode | **No** -- P2P with blockchain | Production |
-| **[Render Network](https://rendernetwork.com/)** | Decentralized GPU rendering | Yes -- render nodes see the scene data | **No** -- blockchain-coordinated | Production |
-| **[CrowdRender](https://www.crowd-render.com/)** | P2P Blender render farm | Yes -- peers see the .blend file | **No** -- P2P LAN discovery | Production, open source |
-| **[BitWrk](https://www.bitwrk.net/)** | Decentralized rendering marketplace | Yes | Hybrid | Open source |
-| **[P2P-MapReduce](https://scalab.dimes.unical.it/projects/p2p-mapreduce/)** | Decentralized MapReduce, peers elect dynamic masters | Yes | **No** -- fully P2P, dynamic master election | Research prototype (JXTA + Hadoop) |
-| **[deThread](https://github.com/deThread/dethread)** | Browser-based distributed computing | Yes -- JS tasks run in Web Workers | **Yes** -- coordinator server | Library, npm |
-| **[Petals](https://petals.dev/)** | Distributed LLM inference, BitTorrent-style | Yes -- model layers are open | **No** -- P2P | Production |
-
-### Key academic work
-
-| Paper | Core idea | Relevance |
-|---|---|---|
-| **[P2P-MapReduce (Marozzo et al., 2012)](https://www.sciencedirect.com/science/article/pii/S0022000011001668)** | Fully decentralized MapReduce. Peers dynamically become masters/slaves. Handles churn, master failure, job recovery. No fixed coordinator. | **Directly relevant** -- this is the architecture pattern for serverless P2P compute |
-| **[Tran & Ha (2014): Feasible MapReduce P2P Framework](https://link.springer.com/article/10.1007/s40595-014-0031-8)** | MapReduce on P2P networks using DHT for task distribution | Maps onto Hyperswarm DHT |
-| **[Collaborative Framework for P2P (Springer)](https://link.springer.com/chapter/10.1007/978-3-642-27317-9_4)** | Task distribution among peers in completely decentralized environments | General architecture reference |
-| **[WASM as Secure Sandbox (2025)](https://www.tspi.at/2025/10/02/wasmsandbox.html)** | WebAssembly for running untrusted code in sandboxed environments across distributed nodes | Relevant if you want peers to run arbitrary code safely |
-| **[wasmCloud Zero Trust Computing](https://wasmcloud.com/blog/zero-trust-security/)** | Zero-trust distributed computing with WASM | Production pattern for sandboxed P2P compute |
-
-### What's NOT been built
-
-Nobody has built: **P2P open-data compute sharing using the Pear/Hypercore stack (Autobase as task log, Hyperswarm for discovery).**
-
-- BOINC/Folding@Home use central servers → not truly P2P
-- Golem/iExec use blockchain for settlement → different stack entirely
-- P2P-MapReduce used JXTA (dead framework) → concept proven but no modern implementation
-- deThread uses WebSockets with coordinator → not serverless
-- Petals is AI-specific → not general compute
-
-**The gap: a general-purpose, serverless P2P compute framework built on Hypercore/Autobase/Hyperswarm.**
-
----
-
-## 4. Architecture: How It Would Work on Pear
-
-### The Autobase-as-Task-Queue Pattern
-
-Autobase is an append-only multiwriter log. The insight: **this is exactly what an event-sourced task queue looks like.**
-
-```
-Autobase entries (chronological, all peers can read/write):
-
-[peer-A] { type: 'task',   id: 't1', action: 'compute', fn: 'primes', range: [1, 1000000], status: 'pending' }
-[peer-B] { type: 'claim',  taskId: 't1', claimedBy: 'peer-B' }
-[peer-B] { type: 'result', taskId: 't1', output: [2, 3, 5, 7, ...], duration: 3400 }
-[peer-A] { type: 'task',   id: 't2', action: 'compute', fn: 'mandelbrot', tile: {x:0,y:0,w:256,h:256}, status: 'pending' }
-[peer-C] { type: 'claim',  taskId: 't2', claimedBy: 'peer-C' }
-[peer-C] { type: 'result', taskId: 't2', output: <pixel data>, duration: 1200 }
-```
-
-This maps perfectly onto Autobase:
-- Each entry is a Hypercore block (append-only, signed, hash-linked)
-- Multiple peers write via Autobase multiwriter
-- Peers discover each other via Hyperswarm DHT
-- The log IS the task queue, claim registry, and result store
-
-### System diagram
-
-```
-                    ┌──────────────────────────┐
-                    │    Shared Autobase Log    │
-                    │                          │
-                    │  task → claim → result   │
-                    │  task → claim → result   │
-                    │  task → ...              │
-                    └────────┬─────────────────┘
-                             │
-                    Hyperswarm DHT discovery
-                    (topic = shared key)
-                             │
-              ┌──────────────┼──────────────┐
-              │              │              │
-         ┌────▼────┐   ┌────▼────┐   ┌────▼────┐
-         │ Peer A  │   │ Peer B  │   │ Peer C  │
-         │         │   │         │   │         │
-         │ Posts   │   │ Claims  │   │ Claims  │
-         │ tasks   │   │ tasks   │   │ tasks   │
-         │         │   │ Computes│   │ Computes│
-         │ Reads   │   │ Writes  │   │ Writes  │
-         │ results │   │ results │   │ results │
-         └─────────┘   └─────────┘   └─────────┘
-```
-
-### Task lifecycle
-
-```
-PENDING  ──→  CLAIMED  ──→  COMPUTING  ──→  COMPLETED
-   │              │              │              │
-   │         peer writes    peer runs      peer writes
-   │         claim entry    the function   result entry
-   │              │              │
-   │              └── TIMEOUT ───┘  (reassign if peer drops)
-   │
-   └── any peer can post tasks
-```
-
-### Verification (optional but impressive)
-
-Since data is open, you can verify results by:
-1. **Redundant computation**: Send same task to 2 peers, compare results
-2. **Spot checks**: Requestor re-computes a random subset of completed tasks
-3. **Reputation**: Track correct results per peer in the Autobase log
-
----
-
-## 5. Does This Idea Already Exist in This Form?
-
-**No.** Specifically:
-
-| What exists | How ours differs |
+### Task Distribution
+| Feature | Status |
 |---|---|
-| BOINC: open-data volunteer compute | Requires central server. Ours is fully P2P on Hyperswarm. |
-| Golem: P2P compute marketplace | Uses Ethereum/blockchain. Ours uses Hypercore/Autobase (simpler, no tokens needed). |
-| P2P-MapReduce: serverless P2P compute | Used JXTA (dead). No modern implementation exists. We'd build on Pear. |
-| PearPass: P2P data sync on Pear | Storage only, no compute. We add task execution. |
-| deThread: browser distributed compute | Requires coordinator server. Not on Pear stack. |
+| **Single task execution** | Done — `run <code>` sends any JS to a worker |
+| **File-based tasks** | Done — `file <path.js>` sends a .js file as task |
+| **Distributed jobs (split/join)** | Done — `job <path.js> [n]` splits data across N workers, joins results |
+| **Worker assignment** | Done — round-robin `assignedTo` prevents duplicate computation |
 
-**Novel combination**: Autobase as an event-sourced task queue + Hyperswarm for serverless peer discovery + open-data compute execution. This pattern hasn't been implemented on Pear.
+### Marketplace Model
+| Feature | Status |
+|---|---|
+| **Auto-discovery** | Done — shared network topic, no keys to exchange |
+| **Multi-requester support** | Done — each requester hosts own Autobase, workers roam between them |
+| **Idle timeout + roaming** | Done — workers leave after 15s idle, find next requester |
+| **Reputation-based ranking** | Done — workers prefer higher-reputation requesters |
+| **Unique worker stores** | Done — `store-${workerId}` avoids collisions |
+| **Proper cleanup on leave** | Done — closes base, leaves topic, clears pool |
+
+### Example Jobs
+| Job | File | What it does |
+|---|---|---|
+| Sum array | `jobs/sum-job.js` | Splits 1000 numbers, sums in parallel, joins |
+| Find primes | `jobs/primes-job.js` | Splits range, sieves in parallel, merges sorted |
+| Mandelbrot | `jobs/mandelbrot-job.js` | Splits image into row chunks, renders in parallel, assembles ASCII art |
+
+### Tests & Demos
+| File | What it tests |
+|---|---|
+| `demo.js` | Self-contained: matrix multiply + Mandelbrot with Hyperswarm fallback |
+| `demo-generic.js` | 6 different generic tasks (arithmetic, fibonacci, matrix, primes, sort, mandelbrot) |
+| `test-full.js` | Matrix + Mandelbrot via `replicateAndSync` |
+| `test-jobs.js` | Split/join with 2 workers, all 3 job types |
+| `test-marketplace.js` | 2 requesters + 2 workers, isolation verification |
 
 ---
 
-## 6. What Novelty Could We Add?
+## What's Missing / Next Steps
 
-### Already novel (the base idea)
-- Using Autobase as a distributed task queue (nobody has done this)
-- P2P compute with zero infrastructure on Pear
+### 1. Real Large-Scale Computing Tasks
 
-### Additional novelty options
+**Current limitation:** Tasks must be pure JS function bodies with JSON-serializable I/O. No imports, no files, no GPU, no binary data.
 
-| Feature | What it is | Effort | Impact |
+| Feature | What | Why | Effort |
 |---|---|---|---|
-| **Dynamic peer roles** | Any peer can be requestor OR provider. No fixed roles. Inspired by P2P-MapReduce's dynamic master election. | Low | High -- true P2P, not client-server in disguise |
-| **Capability-based routing** | Peers announce hardware specs (CPU cores, RAM, GPU) via Hyperswarm metadata. Tasks route to best-fit peer. | Low | Medium -- practical and demoable |
-| **Visual compute dashboard** | Real-time visualization of tasks flowing between peers, Mandelbrot tiles rendering as they arrive | Medium | Very high for demo -- judges love visuals |
-| **WASM sandboxed execution** | Peers submit WASM modules as tasks. Executing peer runs them in a sandbox. Arbitrary code, safely. | High | Very high novelty -- no P2P WASM compute on Hypercore exists |
-| **Compute credit ledger** | The Autobase log tracks work contributed by each peer. "Proof of work" without blockchain. | Low | Medium -- adds fairness/incentive layer |
-| **Automatic task splitting** | Large tasks auto-split into chunks based on connected peer count. More peers = more parallelism. | Medium | High -- shows the system scaling live |
-| **Churn recovery** | If a peer disconnects mid-task, timeout → task reverts to PENDING → another peer picks it up. Free from Autobase eventually-consistent sync. | Low | Medium -- essential for robustness |
-| **Task dependency chains** | Tasks can declare dependencies on other tasks. A task only becomes claimable when its dependencies are completed. Enables multi-stage pipelines. | Medium | High -- enables real workflows, not just independent chunks |
+| **Subprocess execution** | Workers run shell commands (`python script.py`, `blender -b`, `ffmpeg`) via `child_process` | Unlocks any language/tool, not just JS | Medium |
+| **File transfer via Hyperdrive** | Send/receive files (datasets, images, models) alongside tasks | JSON can't carry GBs of data | Medium |
+| **Binary data support** | `Buffer`/`ArrayBuffer` encoding (base64 or Hypercore blocks) | Images, audio, model weights | Low |
+| **npm/module support** | Bundle dependencies with task code, or pre-install on workers | Real code needs libraries | Medium |
+| **Task timeout + kill** | Wrap execution in child process, kill after N seconds | Infinite loops block workers forever | Low |
+| **Worker thread pool** | `worker_threads` for parallel task execution per worker | One task at a time wastes multi-core CPUs | Medium |
+| **WASM sandbox** | Execute WASM modules for safe, portable, near-native compute | Security + performance + language-agnostic | High |
+| **GPU access** | WebGPU/WGSL or native CUDA passthrough | ML inference, rendering, crypto | High |
+| **Streaming results** | Partial/progress updates during long tasks | Users need feedback on 10-min renders | Low |
+| **Task dependencies** | DAG of tasks: B runs only after A completes | Multi-stage pipelines (preprocess → train → evaluate) | Medium |
+
+**Priority for demo:** Subprocess execution + file transfer would unlock rendering and ML inference immediately.
+
+### 2. UI & App
+
+**Current state:** CLI only (readline prompt).
+
+| Feature | What | Effort |
+|---|---|---|
+| **Pear desktop app** | GUI using Pear Runtime's built-in UI (HTML/CSS/JS) | Medium |
+| **Live task dashboard** | Connected peers, task queue (pending/running/done), results | Medium |
+| **Drag-and-drop task submission** | Drop a .js or .py file to submit as task | Low |
+| **Real-time Mandelbrot viewer** | Tiles render live as workers compute them | Medium |
+| **Worker stats panel** | CPU usage, tasks completed, uptime, reputation | Low |
+| **Peer network graph** | Visual map of connected peers and data flow | Medium |
+| **Terminal UI (blessed/ink)** | Rich CLI with panels, progress bars, live updates (no browser needed) | Medium |
+
+**Priority for demo:** Terminal UI with live task progress would be highest impact for least effort. Pear desktop app is the "real" version.
+
+### 3. Refine Task Splitting
+
+**Current state:** Job files define `split()`, `compute()`, `join()`. Splitting is manual and static.
+
+| Feature | What | Effort |
+|---|---|---|
+| **Auto-split by worker count** | Default `n = workers.size`, auto-adjust as workers join/leave | Low (partially done) |
+| **Adaptive chunk sizing** | Benchmark workers, give bigger chunks to faster ones | Medium |
+| **Work stealing** | If worker A finishes early, it takes a chunk from worker B's queue | Medium |
+| **Streaming split** | For huge datasets: split lazily, stream chunks as workers request | High |
+| **Auto-retry failed chunks** | If a worker crashes, reassign its chunks to other workers | Low |
+| **Progress tracking per chunk** | Show which chunks are pending/running/done in real-time | Low |
+| **Built-in splitters** | Library of common split patterns: by rows, by array slice, by file list | Low |
+| **Recursive splitting** | If a chunk is too large for one worker, it can sub-split | High |
+
+**Priority:** Auto-retry + progress tracking are quick wins. Work stealing is the impressive demo feature.
+
+### 4. Pay-for-Compute (Concept)
+
+**Current state:** Reputation is `donated - consumed`, self-reported, local only. Not a payment system.
+
+| Level | What | Feasibility |
+|---|---|---|
+| **Credit ledger (current)** | Track compute donated/consumed per peer. Self-reported. | Done |
+| **Attestation-based credits** | Workers sign attestations of compute delivered. Requesters can verify. | Medium — needs crypto signatures |
+| **Token/credit system** | Peers earn credits for computing, spend credits for requesting. Tracked in a shared Autobase. | Medium — needs shared state + anti-cheat |
+| **Blockchain settlement** | Actual payments via Ethereum/Solana smart contracts. Workers get paid per task. | Out of scope — but architecture supports it as a layer |
+| **Dummy marketplace UI** | Show "balance: 50 credits" and "cost: 3 credits" in the UI. No real money. | Low — UI only, demonstrates the concept |
+
+**Priority for hackathon:** Dummy marketplace UI showing credits being earned and spent. No real payment needed — just show the flow.
+
+### 5. Other Improvements
+
+| Feature | What | Effort |
+|---|---|---|
+| **Result verification** | Send same task to 2 workers, compare results. Flag mismatches. | Low |
+| **Capability announcement** | Workers report CPU cores, RAM, GPU. Requesters route tasks to best fit. | Low |
+| **Encryption (optional)** | Encrypt task data for specific worker's public key. Worker decrypts, computes, encrypts result. | High |
+| **Churn recovery** | If worker disconnects mid-task, timeout → reassign to another worker | Low |
+| **Peer health monitoring** | Heartbeat messages, detect dead workers, remove from pool | Low |
+| **Rate limiting** | Prevent spam: max tasks per minute per requester | Low |
+| **Logging & metrics** | Structured logs, compute time histograms, network stats | Low |
+| **Config file** | `peercompute.json` for idle timeout, store path, bootstrap, etc. | Low |
 
 ---
 
-## 7. What Would Need to Be Built
+## Architecture
 
-### Components
+```
+┌─────────────────┐         NETWORK_TOPIC          ┌─────────────────┐
+│  Requester A    │◄──────── Hyperswarm DHT ───────►│  Worker 1       │
+│                 │          (discovery)            │                 │
+│  Own Autobase   │                                │  Joins A or B   │
+│  Posts tasks    │◄─── advertise { score: 5 } ───►│  based on       │
+│  Collects       │                                │  reputation     │
+│  results        │         Autobase replication    │  score          │
+│                 │◄──────────────────────────────►│                 │
+└─────────────────┘                                └─────────────────┘
 
-1. **Pear app scaffold**
-   - `pear init`, project structure, Corestore setup
-   - Autobase initialization with shared discovery key
+┌─────────────────┐                                ┌─────────────────┐
+│  Requester B    │◄──────── Hyperswarm DHT ───────►│  Worker 2       │
+│                 │          (discovery)            │                 │
+│  Own Autobase   │                                │  Roams between  │
+│  Posts tasks    │◄─── advertise { score: -2 } ──►│  requesters     │
+│  Collects       │                                │  when idle      │
+│  results        │         Autobase replication    │                 │
+│                 │◄──────────────────────────────►│                 │
+└─────────────────┘                                └─────────────────┘
+```
 
-2. **Task schema & lifecycle manager**
-   - Entry types: `task`, `claim`, `result`, `peer-info`
-   - State machine: pending → claimed → computing → completed / timeout
-   - Conflict resolution: first-write-wins for claims (check before claiming)
+## File Structure
 
-3. **Compute engine**
-   - Receives a task description (function name + parameters)
-   - Executes the computation locally
-   - Writes result back to Autobase
-   - Built-in task types: prime search, Mandelbrot tiles, matrix multiplication, text processing
+```
+app/
+├── request-compute.js     # Requester CLI (main entry point)
+├── offer-compute.js       # Worker CLI (main entry point)
+├── base-setup.js          # Shared Autobase + Hyperswarm setup
+├── worker.js              # Generic JS task executor
+├── reputation.js          # Local reputation ledger
+├── boot.js                # Local DHT bootstrap (for testing)
+├── jobs/                  # Example distributed jobs
+│   ├── sum-job.js
+│   ├── primes-job.js
+│   └── mandelbrot-job.js
+├── mandelbrot.js          # Mandelbrot compute functions
+├── matrix.js              # Matrix multiply functions
+├── demo.js                # Self-contained demo (single process)
+├── demo-generic.js        # Generic task demo (6 task types)
+├── test-*.js              # Test scripts
+├── peer-a.js / peer-b.js  # Earlier peer prototypes
+└── package.json
+```
 
-4. **Peer discovery & announcement**
-   - Join Hyperswarm topic (derived from Autobase key)
-   - Announce: peer ID, available CPU cores, current load
-   - Watch for new peers joining/leaving
+## Quick Start
 
-5. **Task watcher / scheduler**
-   - Listen to `autobase.on('update')` for new tasks
-   - If task status is 'pending' and this peer is available → claim it
-   - Simple greedy: first available peer takes first available task
+```bash
+# Laptop 1 (requester)
+cd app && npm install
+node request-compute.js
 
-6. **Result aggregator**
-   - Collect completed results
-   - For visual tasks (Mandelbrot): assemble tiles into full image
-   - For numerical tasks: aggregate/display results
+# Laptop 2 (worker)
+cd app && npm install
+node offer-compute.js
 
-7. **UI / Dashboard**
-   - Connected peers with status indicators
-   - Task queue: pending / in-progress / completed
-   - Live result visualization
-   - Post new task form
-   - Peer contribution stats
-
----
-
-## 8. Feasibility Assessment
-
-| Question | Answer |
-|---|---|
-| **Is it buildable in a hackathon?** | **Yes, more easily than the privacy version.** No encryption complexity. The Autobase-as-task-queue pattern is ~150 lines. Compute functions are plain JS. |
-| **Is Pear the right tool?** | **Mostly yes.** Hyperswarm gives you serverless peer discovery. Autobase gives you multiwriter task log. The gap: Pear wasn't designed for compute, so task execution is custom JS on top. But that's a thin layer. |
-| **What's the hardest part?** | **Task claim conflicts.** Two peers claiming the same task simultaneously. Autobase is eventually consistent, so you'll see both claims. Solution: first-write-wins by timestamp, or let both compute and compare (turns a bug into a verification feature). |
-| **What if Pear runtime is flaky?** | Same risk as the privacy version. Test `pear init` + pearpass-example first. If it works, everything else follows. |
-| **Is it impressive for judges?** | **Yes, if you have a visual task.** Mandelbrot tiles rendering live as different peers compute them is visceral. A terminal-only prime search is less impressive. |
-| **Does it fit the challenge?** | **Yes.** Confirmed with challenge owner -- open data compute on Pear is valid. All protocol requirements met. |
-
-### Time estimate
-
-| Component | Time |
-|---|---|
-| Pear setup + hello world | ~1h |
-| Autobase task schema + lifecycle | ~3h |
-| Compute engine (Mandelbrot + primes) | ~2h |
-| Peer discovery + announcement | ~1h |
-| Task watcher / claim logic | ~2h |
-| Result aggregation + visualization | ~3h |
-| Dashboard UI | ~2h |
-| Polish + demo | ~1h |
-| **Total** | **~15h** |
-
----
-
-## 9. Recommendation
-
-**Build pure open-data P2P compute on Pear:**
-- Autobase as the distributed task queue (novel -- nobody has done this)
-- Hyperswarm for serverless peer discovery
-- Visual compute tasks (Mandelbrot tiles) for demo impact
-- Dynamic peer roles -- any peer is both requestor and provider
-- Compute credit ledger for fairness tracking
-
-Pitch: "A zero-infrastructure P2P compute-sharing platform built on Pear. Your swarm is your supercomputer. No servers, no cloud, no blockchain -- just peers sharing CPU power over Hypercore."
-
----
-
-## 10. Sources
-
-### P2P Compute Platforms
-- [BOINC](https://boinc.berkeley.edu/) -- Volunteer computing middleware
-- [Folding@Home](https://foldingathome.org/) -- Protein folding distributed computing
-- [Golem Network](https://golem.network/) -- Decentralized compute marketplace
-- [iExec](https://iexec.io/) -- Confidential & open compute marketplace
-- [Render Network](https://rendernetwork.com/) -- Decentralized GPU rendering
-- [CrowdRender](https://www.crowd-render.com/) -- P2P Blender render farm
-- [BitWrk](https://www.bitwrk.net/) -- Decentralized rendering
-- [Petals](https://petals.dev/) -- Distributed LLM inference
-- [deThread](https://github.com/deThread/dethread) -- Browser distributed computing
-
-### P2P MapReduce Research
-- [P2P-MapReduce (Marozzo et al., 2012)](https://www.sciencedirect.com/science/article/pii/S0022000011001668) -- Decentralized MapReduce
-- [P2P-MapReduce Project Page](https://scalab.dimes.unical.it/projects/p2p-mapreduce/) -- University of Calabria
-- [Feasible MapReduce P2P Framework (Tran & Ha, 2014)](https://link.springer.com/article/10.1007/s40595-014-0031-8)
-- [Collaborative Framework for P2P (Springer)](https://link.springer.com/chapter/10.1007/978-3-642-27317-9_4)
-
-### WASM & Sandboxed Execution
-- [WASM as Secure Sandbox (2025)](https://www.tspi.at/2025/10/02/wasmsandbox.html)
-- [wasmCloud Zero Trust](https://wasmcloud.com/blog/zero-trust-security/)
-- [WebAssembly Security](https://webassembly.org/docs/security/)
-- [CMU: Provably-Safe WASM Sandboxing](https://www.cs.cmu.edu/~csd-phd-blog/2023/provably-safe-sandboxing-wasm/)
-
-### Pear / Hypercore Stack
-- [Pear Runtime Docs](https://docs.pears.com/)
-- [Hypercore](https://github.com/holepunchto/hypercore)
-- [Autobase](https://github.com/holepunchto/autobase)
-- [Hyperswarm](https://github.com/holepunchto/hyperswarm)
-- [HyperDHT](https://github.com/holepunchto/hyperdht)
-- [autopass](https://github.com/holepunchto/autopass)
-- [pearpass-example](https://github.com/holepunchto/pearpass-example)
-- [Awesome Pears](https://github.com/gasolin/awesome-pears)
-
-### Architecture Patterns
-- [Event Sourcing (Microsoft)](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing)
-- [CQRS + Event Sourcing](https://developer.confluent.io/courses/event-sourcing/cqrs/)
-- [Local-first Software (Ink & Switch)](https://www.inkandswitch.com/local-first/)
-- [Citizen Science Computing (IEEE)](https://ieeexplore.ieee.org/document/8249551/)
+# In requester prompt:
+run return 2 + 2
+job jobs/mandelbrot-job.js 4
+status
+```
