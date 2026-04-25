@@ -51,6 +51,7 @@ const availableRequesters = new Map() // requesterId -> { autobaseKey, pendingTa
 const mountedDrives = new Map() // driveKey hex -> Hyperdrive instance
 let outputDrive = null // worker's own drive for output files
 let idleTimer = null
+let taskPollTimer = null
 let searching = true
 
 function resetIdleTimer () {
@@ -65,6 +66,7 @@ function resetIdleTimer () {
 
 async function leaveCurrentRequester () {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+  if (taskPollTimer) { clearInterval(taskPollTimer); taskPollTimer = null }
 
   const leavingId = currentRequester
 
@@ -125,12 +127,27 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   base.replicate(conn)
   swarm.join(base.discoveryKey, { client: true, server: true })
 
-  // Watch for tasks
+  // Watch for tasks on new updates
   base.on('update', async () => {
     if (base && base.writable) {
       await processTasks()
     }
   })
+
+  // Poll every 2s to catch tasks already in the log before we joined.
+  // The 'update' event alone misses these because base.writable isn't true
+  // at the moment the initial sync fires the event.
+  if (taskPollTimer) clearInterval(taskPollTimer)
+  taskPollTimer = setInterval(async () => {
+    if (!base || searching) { clearInterval(taskPollTimer); taskPollTimer = null; return }
+    try {
+      await base.update()
+      if (base.writable) {
+        console.log(`[…] Poll: view=${base.view.length}, writable=${base.writable}`)
+        await processTasks()
+      }
+    } catch {}
+  }, 2000)
 
   resetIdleTimer()
   console.log(`[~] Connected to ${requesterId}, waiting for authorization...\n`)
