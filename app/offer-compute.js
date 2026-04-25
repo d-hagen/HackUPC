@@ -14,7 +14,7 @@ import { ThreadPool } from './thread-pool.js'
 
 const workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
 const storePath = `./store-${workerId}`
-const IDLE_TIMEOUT = 15000 // leave after 15s with no tasks
+const IDLE_TIMEOUT = 60000 // leave after 60s with no tasks
 const ALLOW_SHELL = process.env.ALLOW_SHELL === '1' || process.env.ALLOW_SHELL === 'true'
 const POOL_SIZE = Number(process.env.POOL_SIZE) || Math.max(1, os.cpus().length - 1)
 const pool = new ThreadPool(POOL_SIZE)
@@ -248,6 +248,12 @@ async function processTasks () {
         const p = pool.runTask(taskEntry).then(async ({ output, threadId }) => {
           const elapsed = (performance.now() - t0).toFixed(2)
 
+          // Guard: base may have been closed if idle timer fired during long task
+          if (!base || !base.writable) {
+            console.log(`[!] Task ${taskEntry.id.slice(0, 8)}… done but lost connection — result dropped`)
+            return
+          }
+
           const outputFiles = []
           if (outputDrive) {
             for await (const f of outputDrive.list('/')) {
@@ -268,10 +274,12 @@ async function processTasks () {
           console.log(`[<] Done in ${elapsed}ms | thread #${threadId} | ${preview}`)
           console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
         }).catch(async (err) => {
-          await base.append({
-            type: 'result', taskId: taskEntry.id, error: err.message,
-            by: workerId, ts: Date.now()
-          })
+          if (base && base.writable) {
+            await base.append({
+              type: 'result', taskId: taskEntry.id, error: err.message,
+              by: workerId, ts: Date.now()
+            })
+          }
           console.log(`[!] Error: ${err.message}\n`)
         })
         poolPromises.push(p)
@@ -299,6 +307,12 @@ async function processTasks () {
           const output = await executeTask(entry, inputDrive, outputDrive)
           const elapsed = (performance.now() - t0).toFixed(2)
 
+          // Guard: base may have been closed if idle timer fired during long task
+          if (!base || !base.writable) {
+            console.log(`[!] Task ${entry.id.slice(0, 8)}… done but lost connection — result dropped`)
+            continue
+          }
+
           const outputFiles = []
           if (outputDrive) {
             for await (const f of outputDrive.list('/')) {
@@ -325,10 +339,12 @@ async function processTasks () {
           }
           console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
         } catch (err) {
-          await base.append({
-            type: 'result', taskId: entry.id, error: err.message,
-            by: workerId, ts: Date.now()
-          })
+          if (base && base.writable) {
+            await base.append({
+              type: 'result', taskId: entry.id, error: err.message,
+              by: workerId, ts: Date.now()
+            })
+          }
           console.log(`[!] Error: ${err.message}\n`)
         }
       }
