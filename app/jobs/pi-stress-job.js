@@ -2,10 +2,7 @@
 // Each chunk runs ~4 min / n workers, emitting progress every ~60 seconds
 // Usage: job jobs/pi-stress-job.js
 
-const TOTAL_SAMPLES = 800_000_000 // ~4 min total across workers
-const EMIT_INTERVAL_SEC = 60
-
-export const data = { totalSamples: TOTAL_SAMPLES }
+export const data = { totalSamples: 800_000_000 }
 
 export function split (data, n) {
   const perWorker = Math.ceil(data.totalSamples / n)
@@ -20,7 +17,7 @@ export function compute (chunk) {
   const { samples, chunkIndex } = chunk
   let inside = 0
   const batchSize = 1_000_000
-  const emitEvery = EMIT_INTERVAL_SEC * 1000 // ms
+  const emitEvery = 60_000 // 60s in ms
   let lastEmit = Date.now()
 
   for (let done = 0; done < samples; done += batchSize) {
