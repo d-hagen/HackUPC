@@ -56,7 +56,14 @@ export async function executeTask (task, inputDrive, outputDrive) {
 
   if (inputDrive) {
     helpers.readFile = async (path, encoding) => {
-      return inputDrive.get(path, { encoding })
+      // Retry with drive sync — Hyperdrive data may still be replicating
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const data = await inputDrive.get(path, { encoding })
+        if (data !== null) return data
+        await inputDrive.update()
+        await new Promise(r => setTimeout(r, 500))
+      }
+      return null
     }
     helpers.listFiles = async (path = '/') => {
       const entries = []
@@ -79,5 +86,5 @@ export async function executeTask (task, inputDrive, outputDrive) {
 
   const fn = new (Object.getPrototypeOf(async function () {}).constructor)(...argNames, code)
   const result = await fn(...args)
-  return result
+  return result === undefined ? null : result
 }
