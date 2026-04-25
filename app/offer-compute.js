@@ -62,6 +62,7 @@ let totalTasksDone = 0
 let processing = false // guard against concurrent processTasks calls
 const completed = new Set()
 const availableRequesters = new Map() // requesterId -> { autobaseKey, pendingTasks, conn, ts }
+const noRunnableTasks = new Map() // requesterId -> timestamp: skip until requester gets new tasks
 const mountedDrives = new Map() // driveKey hex -> Hyperdrive instance
 let outputDrive = null // worker's own drive for output files
 let idleTimer = null
@@ -84,7 +85,7 @@ function resetIdleTimer () {
   }, IDLE_TIMEOUT)
 }
 
-async function leaveCurrentRequester () {
+async function leaveCurrentRequester (noWork = false) {
   // Nullify base and store immediately (synchronous) so concurrent
   // processTasks / poll calls bail at the `if (!base)` guard
   const leavingBase = base
@@ -111,6 +112,7 @@ async function leaveCurrentRequester () {
 
   // Remove from pool so we don't rejoin immediately
   if (leavingId) availableRequesters.delete(leavingId)
+  if (leavingId && noWork) noRunnableTasks.set(leavingId, Date.now())
 
   console.log(`[~] Left ${leavingId || 'unknown'} (${tasksDone} tasks done)\n`)
   tasksDone = 0
@@ -289,33 +291,27 @@ async function processTasks () {
     processing = false
   }
 
-  // If we did work and there's nothing left, check for other requesters immediately
-  if (didWork) {
-    let hasRemainingTasks = false
-    for (let i = 0; i < base.view.length; i++) {
-      const entry = await base.view.get(i)
-      if (entry.type !== 'task') continue
-      if (entry.taskType === 'shell' ? (!ALLOW_SHELL || !entry.cmd) : !entry.code) continue
-      if (entry.assignedTo && entry.assignedTo !== workerId) continue
-      if (entry.requires && !meetsRequirements(entry.requires, myCapabilities)) continue
-      if (completed.has(entry.id)) continue
-      hasRemainingTasks = true
-      break
-    }
+  // Check if there are any tasks this worker can actually execute
+  let hasRunnableTasks = false
+  for (let i = 0; i < base.view.length; i++) {
+    const entry = await base.view.get(i)
+    if (entry.type !== 'task') continue
+    if (entry.taskType === 'shell' ? (!ALLOW_SHELL || !entry.cmd) : !entry.code) continue
+    if (entry.assignedTo && entry.assignedTo !== workerId) continue
+    if (entry.requires && !meetsRequirements(entry.requires, myCapabilities)) continue
+    if (completed.has(entry.id)) continue
+    hasRunnableTasks = true
+    break
+  }
 
-    if (!hasRemainingTasks) {
-      // Check if another requester has tasks waiting
-      let betterOption = false
-      for (const [id, info] of availableRequesters) {
-        if (id !== currentRequester && info.pendingTasks > 0 && Date.now() - info.ts < 30000) {
-          betterOption = true
-          break
-        }
-      }
-      if (betterOption) {
-        console.log('[~] All tasks done here, another requester has work — moving on')
-        leaveCurrentRequester()
-      }
+  if (!hasRunnableTasks) {
+    // No work here for this worker — leave immediately rather than burning idle timeout
+    if (didWork) {
+      console.log('[~] All runnable tasks done, leaving')
+      leaveCurrentRequester()
+    } else {
+      console.log('[~] No tasks match this worker\'s capabilities, leaving')
+      leaveCurrentRequester(true) // mark: don't rejoin until requester has new tasks
     }
   }
 }
@@ -329,6 +325,7 @@ function pickBestRequester () {
     if (Date.now() - info.ts > 30000) continue // skip stale
     if (info.pendingTasks <= 0) continue // skip idle
     if (info.conn.destroyed) continue // skip dead connections
+    if (noRunnableTasks.has(id)) continue // skip: already tried, no matching tasks
     const score = info.reputation?.score ?? 0
     candidates.push({ id, info, score })
   }
@@ -364,6 +361,13 @@ discoverySwarm.on('connection', (conn) => {
 
       if (msg.type === 'advertise' && msg.role === 'requester') {
         const repScore = msg.reputation?.score ?? 0
+        const prev = availableRequesters.get(msg.requesterId)
+        // If requester has more pending tasks than before, they posted new work — clear skip
+        if (noRunnableTasks.has(msg.requesterId)) {
+          if ((msg.pendingTasks || 0) > (prev?.pendingTasks || 0)) {
+            noRunnableTasks.delete(msg.requesterId)
+          }
+        }
         availableRequesters.set(msg.requesterId, {
           autobaseKey: msg.autobaseKey,
           pendingTasks: msg.pendingTasks || 0,
