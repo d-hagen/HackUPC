@@ -158,16 +158,12 @@ base.on('update', async () => {
           job.results.set(chunkIndex, entry.error ? { error: entry.error } : entry.output)
           console.log(`\n[<] Chunk ${chunkIndex + 1}/${job.totalChunks} done (by ${entry.by}, ${entry.elapsed || '?'}ms)`)
 
-          // Progressive PPM preview: write all received strips in order as a partial image
+          // Progressive preview: write received strips as PPM, convert to PNG, open/refresh
           if (job.outputFile && extname(job.outputFile) === '.ppm') {
             try {
-              const received = []
-              for (const [, strip] of [...job.results.entries()].sort((a, b) => {
-                const sa = a[1]; const sb = b[1]
-                return (sa && sa.startRow != null ? sa.startRow : 0) - (sb && sb.startRow != null ? sb.startRow : 0)
-              })) {
-                if (strip && strip.rows) received.push(strip)
-              }
+              const received = [...job.results.values()]
+                .filter(r => r && r.rows)
+                .sort((a, b) => a.startRow - b.startRow)
               if (received.length > 0) {
                 const w = received[0].rows[0].length
                 const h = received.reduce((s, r) => s + r.rows.length, 0)
@@ -177,12 +173,13 @@ base.on('update', async () => {
                     ppm += row.map(([r, g, b]) => `${r} ${g} ${b}`).join(' ') + '\n'
                   }
                 }
+                const pngFile = job.outputFile.replace('.ppm', '.png')
                 fs.writeFileSync(job.outputFile, ppm)
+                try { execSync(`magick ${job.outputFile} ${pngFile} 2>/dev/null || convert ${job.outputFile} ${pngFile}`) } catch {}
                 if (job.results.size === 1) {
-                  // First strip — open Preview so it stays open and auto-refreshes
-                  try { execSync(`open -g ${job.outputFile}`) } catch {}
+                  try { execSync(`open -g ${pngFile}`) } catch {}
                 }
-                console.log(`    [~] Preview updated (${received.length}/${job.totalChunks} strips)`)
+                console.log(`    [~] Preview updated: ${pngFile} (${received.length}/${job.totalChunks} strips)`)
               }
             } catch {}
           }
@@ -199,8 +196,10 @@ base.on('update', async () => {
                 if (job.outputFile) {
                   fs.writeFileSync(job.outputFile, typeof final === 'string' ? final : JSON.stringify(final, null, 2))
                   console.log(`    Saved → ${job.outputFile}`)
-                  if (extname(job.outputFile) !== '.ppm') {
-                    try { execSync(`open -g ${job.outputFile}`) } catch {}
+                  if (extname(job.outputFile) === '.ppm') {
+                    const pngFile = job.outputFile.replace('.ppm', '.png')
+                    try { execSync(`magick ${job.outputFile} ${pngFile} 2>/dev/null || convert ${job.outputFile} ${pngFile}`) } catch {}
+                    console.log(`    Saved → ${pngFile}`)
                   }
                 } else {
                   const out = typeof final === 'string' ? final : JSON.stringify(final, null, 2)
