@@ -158,19 +158,37 @@ base.on('update', async () => {
           job.results.set(chunkIndex, entry.error ? { error: entry.error } : entry.output)
           console.log(`\n[<] Chunk ${chunkIndex + 1}/${job.totalChunks} done (by ${entry.by}, ${entry.elapsed || '?'}ms)`)
 
-          // Progressive preview: write received strips as PPM, convert to PNG, open/refresh
+          // Progressive preview: works for both strips and grid blocks
           if (job.outputFile && extname(job.outputFile) === '.ppm') {
             try {
-              const received = [...job.results.values()]
-                .filter(r => r && r.rows)
-                .sort((a, b) => a.startRow - b.startRow)
+              const received = [...job.results.values()].filter(r => r && r.rows)
               if (received.length > 0) {
-                const w = received[0].rows[0].length
-                const h = received.reduce((s, r) => s + r.rows.length, 0)
-                let ppm = `P3\n${w} ${h}\n255\n`
-                for (const strip of received) {
-                  for (const row of strip.rows) {
-                    ppm += row.map(([r, g, b]) => `${r} ${g} ${b}`).join(' ') + '\n'
+                const isGrid = received[0].startCol != null && received[0].startCol > 0
+                let ppm
+                if (isGrid) {
+                  // Reconstruct partial image: place blocks at their 2D position, blank elsewhere
+                  const fullW = received.reduce((m, r) => Math.max(m, r.endCol), 0)
+                  const fullH = received.reduce((m, r) => Math.max(m, r.endRow), 0)
+                  const grid = Array.from({ length: fullH }, () => Array(fullW).fill(null))
+                  for (const block of received) {
+                    for (let y = 0; y < block.rows.length; y++) {
+                      for (let x = 0; x < block.rows[y].length; x++) {
+                        grid[block.startRow + y][block.startCol + x] = block.rows[y][x]
+                      }
+                    }
+                  }
+                  ppm = `P3\n${fullW} ${fullH}\n255\n`
+                  for (const row of grid) {
+                    ppm += row.map(px => px ? `${px[0]} ${px[1]} ${px[2]}` : '180 180 180').join(' ') + '\n'
+                  }
+                } else {
+                  // Strips: concatenate in row order
+                  received.sort((a, b) => a.startRow - b.startRow)
+                  const w = received[0].rows[0].length
+                  const h = received.reduce((s, r) => s + r.rows.length, 0)
+                  ppm = `P3\n${w} ${h}\n255\n`
+                  for (const strip of received) {
+                    for (const row of strip.rows) ppm += row.map(([r, g, b]) => `${r} ${g} ${b}`).join(' ') + '\n'
                   }
                 }
                 const pngFile = job.outputFile.replace('.ppm', '.png')
@@ -179,7 +197,7 @@ base.on('update', async () => {
                 if (job.results.size === 1) {
                   try { execSync(`open -g ${pngFile}`) } catch {}
                 }
-                console.log(`    [~] Preview updated: ${pngFile} (${received.length}/${job.totalChunks} strips)`)
+                console.log(`    [~] Preview updated: ${pngFile} (${received.length}/${job.totalChunks} blocks)`)
               }
             } catch {}
           }
@@ -261,8 +279,10 @@ Commands:
                        Bundle a task file + its npm deps into one string, send to worker
                          Task file must: export default function (args...) { ... }
                          Example: bundle tasks/resize.js inputPath outputPath
-  job <path.js> [n]    Run a distributed job (split across n workers, default=all)
+  job <path.js> [n] [cols]
+                       Run a distributed job (split across n workers, default=all)
                          Job file exports: data, split(data,n), compute(chunk), join(results)
+                         Extra args passed to split: e.g. "job file.js 2 3" → split(data,2,3) grid
                          Optionally exports: requires (e.g. { hasGPU: true })
   shell [--requires k=v,...] <command>
                        Send a shell command to execute on a worker
@@ -311,7 +331,8 @@ rl.on('line', async (line) => {
   } else if (input.startsWith('job ')) {
     const parts = input.slice(4).trim().split(/\s+/)
     const filePath = parts[0]
-    const nOverride = parts[1] ? parseInt(parts[1]) : null
+    const extraArgs = parts.slice(1).map(p => parseInt(p)).filter(n => !isNaN(n))
+    const nOverride = extraArgs[0] || null
     try {
       const absPath = resolve(filePath)
       const mod = await import(pathToFileURL(absPath).href)
@@ -323,7 +344,7 @@ rl.on('line', async (line) => {
 
       const jobRequires = mod.requires || null
       const n = nOverride || Math.max(1, workers.size)
-      const chunks = mod.split(mod.data, n)
+      const chunks = mod.split(mod.data, n, ...extraArgs.slice(1))
       const jobId = crypto.randomUUID()
       const computeCode = mod.compute.toString()
       const code = `const compute = ${computeCode}; return compute(chunk)`

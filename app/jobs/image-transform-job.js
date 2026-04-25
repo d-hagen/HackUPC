@@ -1,15 +1,17 @@
-// Distributed image transformation: each worker applies a different filter to its strip
+// Distributed image transformation: each worker applies a different filter to its block
+// Usage:
+//   job jobs/image-transform-job.js 4        → 4 horizontal strips
+//   job jobs/image-transform-job.js 2 3      → 2 rows × 3 cols = 6 grid blocks
 // Requires: img.png in app/ directory, ImageMagick installed on requester
 import fs from 'fs'
 import { execSync } from 'child_process'
 
 export const outputFile = 'output.ppm'
 
-const TRANSFORMS = ['grayscale', 'sepia', 'invert', 'warm', 'cool', 'pixelate', 'edge', 'contrast']
+const TRANSFORMS = ['grayscale', 'sepia', 'invert', 'warm', 'cool', 'posterize', 'edge', 'contrast']
 
 function loadImagePixels (path) {
-  // Convert to text PPM via ImageMagick, parse into row arrays
-  const ppmPath = path.replace(/\.\w+$/, '.ppm')
+  const ppmPath = path.replace(/\.\w+$/, '_tmp.ppm')
   execSync(`magick "${path}" -compress none "${ppmPath}"`)
   const raw = fs.readFileSync(ppmPath, 'utf-8')
   const lines = raw.trim().split('\n')
@@ -29,31 +31,44 @@ function loadImagePixels (path) {
 }
 
 const { rows: allRows, width, height } = loadImagePixels('./img.png')
+export const data = { width, height, rowData: allRows }
 
-export const data = { width, height, totalRows: allRows.length, rowData: allRows }
-
-export function split (data, n) {
+// split(data, gridRows, gridCols=1)
+// gridRows=4, gridCols=1 → 4 horizontal strips
+// gridRows=2, gridCols=3 → 2×3 = 6 grid blocks
+export function split (data, gridRows, gridCols = 1) {
   const { width, height, rowData } = data
-  const rowsPerChunk = Math.ceil(height / n)
+  const blockH = Math.ceil(height / gridRows)
+  const blockW = Math.ceil(width / gridCols)
   const chunks = []
-  for (let i = 0; i < n; i++) {
-    const startRow = i * rowsPerChunk
-    const endRow = Math.min(startRow + rowsPerChunk, height)
-    if (startRow >= height) break
-    chunks.push({
-      width,
-      height,
-      startRow,
-      endRow,
-      rows: rowData.slice(startRow, endRow),
-      transform: TRANSFORMS[i % TRANSFORMS.length]
-    })
+  let idx = 0
+  for (let gr = 0; gr < gridRows; gr++) {
+    for (let gc = 0; gc < gridCols; gc++) {
+      const startRow = gr * blockH
+      const endRow = Math.min(startRow + blockH, height)
+      const startCol = gc * blockW
+      const endCol = Math.min(startCol + blockW, width)
+      if (startRow >= height || startCol >= width) continue
+
+      // Slice out just the columns this block needs
+      const rows = rowData.slice(startRow, endRow).map(row => row.slice(startCol, endCol))
+
+      chunks.push({
+        width, height,
+        startRow, endRow,
+        startCol, endCol,
+        rows,
+        transform: TRANSFORMS[idx % TRANSFORMS.length],
+        gridRows, gridCols
+      })
+      idx++
+    }
   }
   return chunks
 }
 
 export function compute (chunk) {
-  const { width, startRow, endRow, rows, transform } = chunk
+  const { startRow, endRow, startCol, endCol, rows, transform } = chunk
 
   function clamp (v) { return Math.max(0, Math.min(255, Math.round(v))) }
 
@@ -63,53 +78,53 @@ export function compute (chunk) {
         const gray = clamp(0.299 * r + 0.587 * g + 0.114 * b)
         return [gray, gray, gray]
       }
-      case 'sepia': {
+      case 'sepia':
         return [
           clamp(r * 0.393 + g * 0.769 + b * 0.189),
           clamp(r * 0.349 + g * 0.686 + b * 0.168),
           clamp(r * 0.272 + g * 0.534 + b * 0.131)
         ]
-      }
       case 'invert':
         return [255 - r, 255 - g, 255 - b]
       case 'warm':
         return [clamp(r * 1.2), clamp(g * 1.05), clamp(b * 0.8)]
       case 'cool':
         return [clamp(r * 0.8), clamp(g * 1.05), clamp(b * 1.3)]
-      case 'pixelate': {
-        // 8x8 block average
-        const blockSize = 8
-        const bx = Math.floor((rows[0].indexOf([r, g, b]) || 0) / blockSize) * blockSize
-        // approximate: just posterize (reduce color depth)
-        return [clamp(Math.round(r / 32) * 32), clamp(Math.round(g / 32) * 32), clamp(Math.round(b / 32) * 32)]
-      }
+      case 'posterize':
+        return [clamp(Math.round(r / 64) * 64), clamp(Math.round(g / 64) * 64), clamp(Math.round(b / 64) * 64)]
       case 'edge': {
-        // high contrast + desaturate
         const gray = 0.299 * r + 0.587 * g + 0.114 * b
-        const contrast = clamp((gray - 128) * 2.5 + 128)
-        return [contrast, contrast, contrast]
+        return [clamp((gray - 128) * 2.5 + 128), clamp((gray - 128) * 2.5 + 128), clamp((gray - 128) * 2.5 + 128)]
       }
-      case 'contrast': {
+      case 'contrast':
         return [clamp((r - 128) * 1.8 + 128), clamp((g - 128) * 1.8 + 128), clamp((b - 128) * 1.8 + 128)]
-      }
       default:
         return [r, g, b]
     }
   }))
 
-  return { startRow, endRow, rows: transformed, transform }
+  return { startRow, endRow, startCol, endCol, rows: transformed, transform }
 }
 
 export function join (results) {
-  results.sort((a, b) => a.startRow - b.startRow)
-  const width = results[0].rows[0].length
-  const height = results.reduce((s, r) => s + r.rows.length, 0)
+  // Reconstruct full image: place each block at its (startRow, startCol) position
+  const fullWidth = results.reduce((max, r) => Math.max(max, r.endCol), 0)
+  const fullHeight = results.reduce((max, r) => Math.max(max, r.endRow), 0)
 
-  let ppm = `P3\n${width} ${height}\n255\n`
-  for (const strip of results) {
-    for (const row of strip.rows) {
-      ppm += row.map(([r, g, b]) => `${r} ${g} ${b}`).join(' ') + '\n'
+  // Build empty pixel grid
+  const grid = Array.from({ length: fullHeight }, () => Array(fullWidth).fill(null))
+
+  for (const block of results) {
+    for (let y = 0; y < block.rows.length; y++) {
+      for (let x = 0; x < block.rows[y].length; x++) {
+        grid[block.startRow + y][block.startCol + x] = block.rows[y][x]
+      }
     }
+  }
+
+  let ppm = `P3\n${fullWidth} ${fullHeight}\n255\n`
+  for (const row of grid) {
+    ppm += row.map(px => px ? `${px[0]} ${px[1]} ${px[2]}` : '0 0 0').join(' ') + '\n'
   }
   return ppm
 }
