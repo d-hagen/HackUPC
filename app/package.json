@@ -78,6 +78,7 @@
     "readline": "npm:bare-node-readline@^1.0.1",
     "repl": "npm:bare-node-repl@^1.0.1",
     "sea": "npm:bare-node-sea@^0.0.0",
+    "slugify": "^1.6.9",
     "sqlite": "npm:bare-node-sqlite@^0.0.0",
     "stream": "npm:bare-node-stream@^1.0.0",
     "string_decoder": "npm:bare-node-string-decoder@^0.0.1",
