@@ -1,0 +1,17 @@
+{
+  "generatedAt": 1777126435517,
+  "requesterId": "requester-fc52f27f",
+  "reputation": {
+    "donated": 10,
+    "consumed": 4
+  },
+  "workerCount": 0,
+  "pendingTaskCount": 0,
+  "autobaseEntries": 0,
+  "monitorMode": false,
+  "dashboardCommandsPath": "/Users/pawarit/Desktop/hack/HackUPC/app/dashboard-commands.jsonl",
+  "workers": [],
+  "pendingJoinRequests": [],
+  "jobs": [],
+  "results": []
+}
