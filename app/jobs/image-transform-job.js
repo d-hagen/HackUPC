@@ -8,7 +8,8 @@ import { execSync } from 'child_process'
 
 export const outputFile = 'output.ppm'
 
-const TRANSFORMS = ['grayscale', 'sepia', 'invert', 'warm', 'cool', 'posterize', 'edge', 'contrast']
+export const transforms = ['grayscale', 'sepia', 'invert', 'warm', 'cool', 'posterize', 'edge', 'contrast']
+const TRANSFORMS = transforms
 
 function loadImagePixels (path) {
   const ppmPath = path.replace(/\.\w+$/, '_tmp.ppm')

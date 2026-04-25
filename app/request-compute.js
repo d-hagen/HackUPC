@@ -448,7 +448,7 @@ rl.on('line', async (line) => {
 
       const jobRequires = mod.requires || null
       const n = nOverride || Math.max(1, workers.size)
-      const chunks = mod.split(mod.data, n, ...extraArgs.slice(1))
+      let chunks = mod.split(mod.data, n, ...extraArgs.slice(1))
       const jobId = crypto.randomUUID()
       const computeCode = mod.compute.toString()
       const code = `const compute = ${computeCode}; return compute(chunk)`
@@ -456,6 +456,23 @@ rl.on('line', async (line) => {
       const workerIds = [...workers.values()].map(w => w.id)
       if (workerIds.length === 0) {
         console.log('[!] No workers connected. Tasks queued — will run when workers join.')
+      }
+
+      // If job exports transforms[], assign one per worker so each machine applies a different filter
+      if (mod.transforms && workerIds.length > 0) {
+        const workerTransform = new Map()
+        workerIds.forEach((id, i) => workerTransform.set(id, mod.transforms[i % mod.transforms.length]))
+        chunks = chunks.map((chunk, i) => {
+          const assignedWorker = workerIds[i % workerIds.length]
+          return { ...chunk, transform: workerTransform.get(assignedWorker) }
+        })
+      }
+
+      // Shuffle chunk order so blocks don't appear strictly top-to-bottom
+      const chunkOrder = Array.from({ length: chunks.length }, (_, i) => i)
+      for (let i = chunkOrder.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [chunkOrder[i], chunkOrder[j]] = [chunkOrder[j], chunkOrder[i]]
       }
 
       if (jobRequires) console.log(`[>] Job requires: ${JSON.stringify(jobRequires)}`)
@@ -481,7 +498,7 @@ rl.on('line', async (line) => {
         imageHeight
       })
 
-      for (let i = 0; i < chunks.length; i++) {
+      for (const i of chunkOrder) {
         const taskId = crypto.randomUUID()
         taskToJob.set(taskId, { jobId, chunkIndex: i })
         // For jobs with requirements, pick capable worker; otherwise round-robin
