@@ -291,6 +291,34 @@ def main() -> None:
     command_path = _commands_path(state)
     st.sidebar.caption(f"Command queue: {command_path}")
 
+    with st.sidebar.form("upload_file_form", clear_on_submit=True):
+        st.subheader("Upload & Run File")
+        uploaded_file = st.file_uploader("Upload JS file", type=["js"])
+        run_mode = st.radio("Execution Mode", ["Distributed Job (job)", "Single Task (file)"], index=0)
+        chunk_count = st.number_input("Chunks (for Job: 0 = auto)", min_value=0, value=0, step=1)
+        submit_file = st.form_submit_button("Queue Uploaded File")
+    if submit_file and uploaded_file is not None:
+        save_dir = Path(__file__).resolve().parent / "jobs"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = f"{uuid.uuid4().hex[:8]}_{uploaded_file.name}"
+        file_path = save_dir / safe_name
+        try:
+            with file_path.open("wb") as f:
+                f.write(uploaded_file.getbuffer())
+            cmd_type = "job" if "Job" in run_mode else "file"
+            cmd_str = f"{cmd_type} jobs/{safe_name}"
+            if cmd_type == "job" and int(chunk_count) > 0:
+                cmd_str += f" {int(chunk_count)}"
+            ok, msg = _queue_command(command_path, cmd_str)
+            if ok:
+                st.sidebar.success(f"Queued: {cmd_str}")
+            else:
+                st.sidebar.error(msg)
+        except Exception as e:
+            st.sidebar.error(f"Failed to save file: {e}")
+    elif submit_file:
+        st.sidebar.warning("Please upload a file first.")
+
     with st.sidebar.form("run_js_form", clear_on_submit=True):
         js_code = st.text_area("Run JS code", placeholder="return 2 + 2")
         submit_js = st.form_submit_button("Queue run")
