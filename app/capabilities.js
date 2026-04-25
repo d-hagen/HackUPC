@@ -4,7 +4,7 @@
 import os from 'os'
 import { execSync, spawnSync } from 'child_process'
 
-function runCmd (cmd, timeout = 3000) {
+function runCmd (cmd, timeout = 500) {
   try {
     const result = spawnSync('sh', ['-c', cmd], { timeout, encoding: 'utf-8' })
     return { ok: result.status === 0, stdout: (result.stdout || '').trim() }
@@ -14,8 +14,8 @@ function runCmd (cmd, timeout = 3000) {
 }
 
 function detectGPUType () {
-  // NVIDIA CUDA
-  const nvidiaSmi = runCmd('nvidia-smi --list-gpus')
+  // NVIDIA CUDA — skip on macOS, no CUDA support
+  const nvidiaSmi = process.platform !== 'darwin' ? runCmd('nvidia-smi --list-gpus') : { ok: false, stdout: '' }
   if (nvidiaSmi.ok && nvidiaSmi.stdout) {
     const firstLine = nvidiaSmi.stdout.split('\n')[0]
     const nameMatch = firstLine.match(/GPU \d+: (.+?) \(/)
@@ -45,8 +45,8 @@ function detectGPUType () {
     }
   }
 
-  // AMD ROCm (Linux)
-  const rocm = runCmd('rocm-smi --showproductname')
+  // AMD ROCm (Linux only)
+  const rocm = process.platform !== 'darwin' ? runCmd('rocm-smi --showproductname') : { ok: false, stdout: '' }
   if (rocm.ok && rocm.stdout) {
     return { type: 'rocm', name: 'AMD GPU (ROCm)', raw: rocm.stdout }
   }
@@ -65,7 +65,7 @@ function detectPython () {
 function detectPyTorch (pythonCmd = 'python3') {
   const result = runCmd(
     `${pythonCmd} -c "import torch; mps=hasattr(torch.backends,'mps') and torch.backends.mps.is_available(); print(torch.__version__+'|'+str(torch.cuda.is_available())+'|'+str(mps))"`,
-    5000
+    3000
   )
   if (!result.ok) return { available: false }
   const [version, cuda, mps] = result.stdout.split('|')

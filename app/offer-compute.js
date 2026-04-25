@@ -23,11 +23,6 @@ console.log('╚═════════════════════�
 console.log('')
 console.log(`Idle timeout: ${IDLE_TIMEOUT / 1000}s | Store: ${storePath}`)
 console.log(`Shell execution: ${ALLOW_SHELL ? 'ENABLED' : 'DISABLED (set ALLOW_SHELL=1 to enable)'}`)
-console.log('Detecting capabilities...')
-
-const myCapabilities = await detectCapabilities()
-console.log(`Platform: ${myCapabilities.platform}/${myCapabilities.arch} | CPU: ${myCapabilities.cpuCores} cores | RAM: ${myCapabilities.ramGB}GB`)
-console.log(`GPU: ${myCapabilities.gpuName} (${myCapabilities.gpuType}) | Python: ${myCapabilities.hasPython ? myCapabilities.pythonVersion : 'no'} | PyTorch: ${myCapabilities.hasPyTorch ? myCapabilities.pytorchVersion : 'no'}`)
 console.log()
 
 const BOOTSTRAP = process.env.BOOTSTRAP
@@ -71,6 +66,7 @@ let idleTimer = null
 let taskPollTimer = null
 let searching = true
 let joining = false // guard against concurrent joinRequester calls
+const myCapabilities = {} // populated async after swarm init
 
 function resetIdleTimer () {
   if (idleTimer) clearTimeout(idleTimer)
@@ -359,6 +355,14 @@ discoverySwarm.on('connection', (conn) => {
   })
 
   // NO replication on discovery connections
+})
+
+// Detect capabilities in background — doesn't block swarm startup
+console.log('Detecting capabilities...')
+detectCapabilities().then(caps => {
+  Object.assign(myCapabilities, caps)
+  console.log(`Platform: ${caps.platform}/${caps.arch} | CPU: ${caps.cpuCores} cores | RAM: ${caps.ramGB}GB`)
+  console.log(`GPU: ${caps.gpuName} (${caps.gpuType}) | Python: ${caps.hasPython ? caps.pythonVersion : 'no'} | PyTorch: ${caps.hasPyTorch ? caps.pytorchVersion : 'no'}`)
 })
 
 discoverySwarm.flush().then(() => console.log('DHT bootstrap complete.'))
