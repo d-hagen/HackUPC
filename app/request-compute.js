@@ -72,17 +72,19 @@ discoverySwarm.on('connection', (conn) => {
   conn.on('close', () => broadcastConns.delete(conn))
   conn.on('error', () => broadcastConns.delete(conn))
 
-  // Send advertisement immediately
-  const rep = loadReputation()
-  conn.write(JSON.stringify({
-    type: 'advertise',
-    role: 'requester',
-    requesterId,
-    autobaseKey,
-    pendingTasks: pendingTaskCount,
-    reputation: { donated: rep.donated, consumed: rep.consumed, score: getScore(rep) },
-    workerCount: workers.size
-  }))
+  // Wait for noise handshake before sending — writing before 'open' drops data
+  conn.once('open', () => {
+    const rep = loadReputation()
+    conn.write(JSON.stringify({
+      type: 'advertise',
+      role: 'requester',
+      requesterId,
+      autobaseKey,
+      pendingTasks: pendingTaskCount,
+      reputation: { donated: rep.donated, consumed: rep.consumed, score: getScore(rep) },
+      workerCount: workers.size
+    }))
+  })
 
   conn.on('data', async (data) => {
     try {
