@@ -108,7 +108,8 @@ export async function detectCapabilities () {
 
     // Convenience flags
     hasCUDA: gpuDevice === 'cuda',
-    hasMPS: gpuDevice === 'mps'
+    hasMPS: gpuDevice === 'mps',
+    allowsShell: process.env.ALLOW_SHELL === '1' || process.env.ALLOW_SHELL === 'true'
   }
 }
 
@@ -131,6 +132,7 @@ export function meetsRequirements (requires, caps) {
   if (requires.cpuCores && caps.cpuCores < requires.cpuCores) return false
   if (requires.platform && caps.platform !== requires.platform) return false
   if (requires.arch && caps.arch !== requires.arch) return false
+  if (requires.allowsShell && !caps.allowsShell) return false
   return true
 }
 

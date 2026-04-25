@@ -239,14 +239,13 @@ rl.on('line', async (line) => {
 
   if (input.startsWith('run ')) {
     const { rest: code, requires } = parseRequires(input.slice(4).trim())
+    const id = crypto.randomUUID()
+    const assignedTo = requires && workers.size > 0 ? pickWorkerForTask(requires, workers) : null
     if (workers.size === 0) {
       console.log('[!] No workers yet. Task queued — will run when a worker joins.')
-    }
-    const id = crypto.randomUUID()
-    const assignedTo = requires ? pickWorkerForTask(requires, workers) : null
-    if (requires && !assignedTo) {
-      console.log(`[!] No worker meets requirements: ${JSON.stringify(requires)}`)
-      rl.prompt(); return
+    } else if (requires && !assignedTo) {
+      console.log(`[!] No connected worker meets requirements: ${JSON.stringify(requires)}`)
+      console.log('    Task will be queued — will run when a matching worker joins.')
     }
     pendingTaskCount++
     broadcast()
@@ -362,25 +361,26 @@ rl.on('line', async (line) => {
       rl.prompt(); return
     }
 
-    if (workers.size === 0) {
-      console.log('[!] No workers yet. Task queued — will run when a shell-enabled worker joins.')
-    }
+    // Shell tasks implicitly require allowsShell — merge with user requires
+    const shellRequires = { allowsShell: true, ...(requires || {}) }
     const id = crypto.randomUUID()
-    const assignedTo = requires ? pickWorkerForTask(requires, workers) : null
-    if (requires && !assignedTo) {
-      console.log(`[!] No worker meets requirements: ${JSON.stringify(requires)}`)
-      rl.prompt(); return
+    const assignedTo = workers.size > 0 ? pickWorkerForTask(shellRequires, workers) : null
+    if (workers.size > 0 && !assignedTo) {
+      console.log(`[!] No connected worker meets requirements: ${JSON.stringify(shellRequires)}`)
+      console.log('    Task will be queued — will run when a matching worker joins.')
+    } else if (workers.size === 0) {
+      console.log('[!] No workers yet. Task queued — will run when a shell-enabled worker joins.')
     }
     pendingTaskCount++
     broadcast()
     await base.append({
       type: 'task', id, taskType: 'shell', cmd: finalCmd, timeout,
-      requires: requires || undefined, assignedTo,
+      requires: shellRequires, assignedTo,
       by: requesterId, ts: Date.now()
     })
     addConsumed(1)
     broadcast()
-    const reqStr = requires ? ` [requires: ${JSON.stringify(requires)}]` : ''
+    const reqStr = ` [requires: ${JSON.stringify(shellRequires)}]`
     console.log(`[>] Shell task ${id.slice(0, 8)}…${reqStr} posted: ${finalCmd.slice(0, 60)}`)
 
   } else if (input === 'workers') {
