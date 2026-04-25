@@ -18,13 +18,14 @@ test('pool executes a single task', async (t) => {
   const pool = new ThreadPool(1)
   await pool.start()
 
-  const result = await pool.runTask({
+  const { output, threadId } = await pool.runTask({
     id: 'test-1',
     code: 'return 2 + 3',
     argNames: [],
     args: []
   })
-  t.is(result, 5)
+  t.is(output, 5)
+  t.is(threadId, 0)
   await pool.destroy()
 })
 
@@ -32,13 +33,13 @@ test('pool executes task with arguments', async (t) => {
   const pool = new ThreadPool(1)
   await pool.start()
 
-  const result = await pool.runTask({
+  const { output } = await pool.runTask({
     id: 'test-args',
     code: 'return a * b + c',
     argNames: ['a', 'b', 'c'],
     args: [6, 7, 0]
   })
-  t.is(result, 42)
+  t.is(output, 42)
   await pool.destroy()
 })
 
@@ -54,7 +55,7 @@ test('pool runs multiple tasks in parallel', async (t) => {
   ])
   const elapsed = performance.now() - t0
 
-  t.alike(results.sort(), [1, 2, 3])
+  t.alike(results.map(r => r.output).sort(), [1, 2, 3])
   // If serial, ~300ms. If parallel, ~100ms. Allow generous margin.
   t.ok(elapsed < 250, `parallel execution took ${elapsed.toFixed(0)}ms (expected < 250ms)`)
   await pool.destroy()
@@ -70,7 +71,7 @@ test('pool queues tasks when all threads are busy', async (t) => {
     pool.runTask({ id: 'q3', code: 'return 30' })
   ])
 
-  t.alike(results.sort((a, b) => a - b), [10, 20, 30])
+  t.alike(results.map(r => r.output).sort((a, b) => a - b), [10, 20, 30])
   await pool.destroy()
 })
 
@@ -95,8 +96,8 @@ test('pool continues working after a task error', async (t) => {
   } catch {}
 
   // Next task should still work
-  const result = await pool.runTask({ id: 'ok', code: 'return 99' })
-  t.is(result, 99)
+  const { output } = await pool.runTask({ id: 'ok', code: 'return 99' })
+  t.is(output, 99)
   await pool.destroy()
 })
 
@@ -138,7 +139,7 @@ test('pool handles async task code', async (t) => {
   const pool = new ThreadPool(1)
   await pool.start()
 
-  const result = await pool.runTask({
+  const { output } = await pool.runTask({
     id: 'async',
     code: `
       const arr = [1, 2, 3, 4, 5]
@@ -146,7 +147,7 @@ test('pool handles async task code', async (t) => {
       return arr.reduce((a, b) => a + b, 0)
     `
   })
-  t.is(result, 15)
+  t.is(output, 15)
   await pool.destroy()
 })
 

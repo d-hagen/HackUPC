@@ -240,7 +240,7 @@ async function processTasks () {
         console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [pool]`)
         const t0 = performance.now()
         try {
-          const output = await pool.runTask(entry)
+          const { output, threadId } = await pool.runTask(entry)
           const elapsed = (performance.now() - t0).toFixed(2)
 
           const outputFiles = []
@@ -260,7 +260,7 @@ async function processTasks () {
           totalTasksDone++
           addDonated(1)
           const preview = JSON.stringify(output).slice(0, 80)
-          console.log(`[<] Done in ${elapsed}ms | ${preview}`)
+          console.log(`[<] Done in ${elapsed}ms | thread #${threadId} | ${preview}`)
           console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
         } catch (err) {
           await base.append({

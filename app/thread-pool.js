@@ -95,7 +95,7 @@ export class ThreadPool {
         this.running--
 
         if (msg.type === 'result') {
-          resolve(msg.output)
+          resolve({ output: msg.output, threadId: thread.id })
         } else if (msg.type === 'error') {
           reject(new Error(msg.error))
         }
