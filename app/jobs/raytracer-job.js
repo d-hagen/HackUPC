@@ -3,10 +3,10 @@
 export const outputFile = 'render.ppm'
 
 export const data = {
-  width: 400,
-  height: 300,
-  samplesPerPixel: 4,
-  maxDepth: 6
+  width: 800,
+  height: 600,
+  samplesPerPixel: 64,
+  maxDepth: 10
 }
 
 export function split (data, n) {
