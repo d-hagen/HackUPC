@@ -67,7 +67,8 @@ for (const jobFile of jobFiles) {
 
   console.log(`Split into ${chunks.length} chunks`)
 
-  // Post subtasks
+  // Post subtasks with assignment
+  const workerIds = ['worker-1', 'worker-2']
   const taskIds = []
   for (let i = 0; i < chunks.length; i++) {
     const taskId = crypto.randomUUID()
@@ -75,27 +76,31 @@ for (const jobFile of jobFiles) {
     await requester.append({
       type: 'task', id: taskId, jobId, chunkIndex: i, totalChunks: chunks.length,
       code, argNames: ['chunk'], args: [chunks[i]],
+      assignedTo: workerIds[i % 2],
       by: 'requester', ts: Date.now()
     })
   }
   await sync()
 
-  // Workers execute (round-robin: even chunks → w1, odd → w2)
-  const workers = [w1, w2]
-  for (let i = 0; i < taskIds.length; i++) {
-    const worker = workers[i % 2]
+  // Both workers scan all tasks but only execute assigned ones
+  const workerBases = [w1, w2]
+  for (let w = 0; w < 2; w++) {
+    const worker = workerBases[w]
+    const wId = workerIds[w]
     for (let j = 0; j < worker.view.length; j++) {
       const entry = await worker.view.get(j)
-      if (entry.type === 'task' && entry.id === taskIds[i]) {
-        const t0 = performance.now()
-        const output = await executeTask(entry)
-        const elapsed = (performance.now() - t0).toFixed(2)
-        await worker.append({
-          type: 'result', taskId: taskIds[i], output, elapsed: Number(elapsed),
-          by: `worker-${i % 2 + 1}`, ts: Date.now()
-        })
-        console.log(`  Chunk ${i} done by worker-${i % 2 + 1} (${elapsed}ms)`)
-      }
+      if (entry.type !== 'task' || !entry.code) continue
+      if (entry.assignedTo && entry.assignedTo !== wId) continue
+      if (!taskIds.includes(entry.id)) continue
+
+      const t0 = performance.now()
+      const output = await executeTask(entry)
+      const elapsed = (performance.now() - t0).toFixed(2)
+      await worker.append({
+        type: 'result', taskId: entry.id, output, elapsed: Number(elapsed),
+        by: wId, ts: Date.now()
+      })
+      console.log(`  Chunk ${taskIds.indexOf(entry.id)} done by ${wId} (${elapsed}ms)`)
     }
   }
   await sync()

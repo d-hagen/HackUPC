@@ -179,10 +179,15 @@ rl.on('line', async (line) => {
       const chunks = mod.split(mod.data, n)
       const jobId = crypto.randomUUID()
       const computeCode = mod.compute.toString()
-      // Wrap named function into a return expression
       const code = `const compute = ${computeCode}; return compute(chunk)`
 
-      console.log(`[>] Job ${jobId.slice(0, 8)}… splitting into ${chunks.length} chunks across ${n} worker(s)`)
+      // Round-robin assign chunks to available workers
+      const workerIds = [...workers.values()].map(w => w.id)
+      if (workerIds.length === 0) {
+        console.log('[!] No workers connected. Tasks will be unassigned (first worker takes all).')
+      }
+
+      console.log(`[>] Job ${jobId.slice(0, 8)}… splitting into ${chunks.length} chunks across ${workerIds.length || '?'} worker(s)`)
 
       pendingJobs.set(jobId, {
         totalChunks: chunks.length,
@@ -193,9 +198,11 @@ rl.on('line', async (line) => {
       for (let i = 0; i < chunks.length; i++) {
         const taskId = crypto.randomUUID()
         taskToJob.set(taskId, { jobId, chunkIndex: i })
+        const assignedTo = workerIds.length > 0 ? workerIds[i % workerIds.length] : null
         await base.append({
           type: 'task', id: taskId, jobId, chunkIndex: i, totalChunks: chunks.length,
           code, argNames: ['chunk'], args: [chunks[i]],
+          assignedTo,
           by: 'requester', ts: Date.now()
         })
       }

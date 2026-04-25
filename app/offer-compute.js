@@ -46,6 +46,8 @@ async function processTasks () {
     const entry = await base.view.get(i)
     if (entry.type !== 'task' || completed.has(entry.id)) continue
     if (!entry.code) continue
+    // Only pick up tasks assigned to me or unassigned
+    if (entry.assignedTo && entry.assignedTo !== workerId) continue
 
     // Check if result already exists
     let hasResult = false
