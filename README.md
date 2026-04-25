@@ -359,3 +359,38 @@ BOOTSTRAP=localhost:8000 ALLOW_SHELL=1 node offer-compute.js
 | `results` | Show all task results |
 | `status` | Show network status and reputation |
 | `help` | Show help |
+
+---
+
+## Prioritized Roadmap (assuming Scaling & Performance + UI are done)
+
+### Tier 1 — High Impact, Low Effort (Do First)
+
+| # | Feature | Why | Effort |
+|---|---|---|---|
+| 1 | **Auto-retry failed chunks** | A single worker crash kills a distributed job. Timeout + reassign makes the system actually reliable for real workloads. | Low |
+| 2 | **Churn recovery** | Workers disconnect mid-task constantly in P2P. Timeout + reassign is table stakes for any demo that isn't on localhost. | Low |
+| 3 | **Peer health monitoring (heartbeats)** | Needed to make retry and churn recovery work well. Detect dead workers so you're not waiting for arbitrary timeouts. | Low |
+
+### Tier 2 — Differentiators for the Demo
+
+| # | Feature | Why | Effort |
+|---|---|---|---|
+| 4 | **Task dependencies (DAG)** | Separates "distributed function runner" from "distributed compute platform." Chaining tasks (download → transform → aggregate) makes the system useful for real workflows. High wow-factor. | Medium |
+| 5 | **Adaptive chunk sizing** | Benchmark workers, give bigger chunks to faster ones. Makes split/join jobs visibly faster and demonstrates smart scheduling beyond round-robin. | Medium |
+| 6 | **Work stealing** | Fast workers grab leftover work from slow ones. Natural complement to adaptive chunking — together they make genuinely competitive scheduling. | Medium |
+
+### Tier 3 — Polish / Nice-to-Have
+
+| # | Feature | Why | Effort |
+|---|---|---|---|
+| 7 | **Attestation-based credits** | Moves reputation from self-reported honor system to something verifiable. Important for the "trustless compute" narrative. | Medium |
+| 8 | **Progress tracking per chunk** | UX feature showing which chunks are pending/running/done in real-time. | Low |
+| 9 | **Config file** | Quality of life — `peercompute.json` for idle timeout, store path, bootstrap, etc. | Low |
+| 10 | **Rate limiting** | Prevent spam. Only matters at scale. | Low |
+
+### Skip for Now
+
+- **Encryption** — High effort, low demo value
+- **WASM sandbox** — High effort; JS AsyncFunction approach already works
+- **Token/blockchain settlement** — Out of scope; attestation layer alone tells the story
