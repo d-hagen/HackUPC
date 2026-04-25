@@ -9,6 +9,7 @@ import readline from 'readline'
 import Hyperswarm from 'hyperswarm'
 
 import { basename } from 'path'
+import { bundleTask } from './bundler.js'
 
 const requesterId = `requester-${crypto.randomUUID().slice(0, 8)}`
 const { base, swarm: replicationSwarm, store, drive, cleanup } = await createBase('./store-requester', null)
@@ -182,6 +183,10 @@ Commands:
                          run return Array.from({length:10}, (_,i) => i*i)
                          Tasks with files get: readFile(path), listFiles(), writeFile(path, data)
   file <path.js>       Send a .js file as a single task
+  bundle <path.js> [arg1 arg2 ...]
+                       Bundle a task file + its npm deps into one string, send to worker
+                         Task file must: export default function (args...) { ... }
+                         Example: bundle tasks/resize.js inputPath outputPath
   job <path.js> [n]    Run a distributed job (split across n workers, default=all)
                          Job file exports: data, split(data,n), compute(chunk), join(results)
   shell <command>      Send a shell command to execute on a worker
@@ -296,6 +301,32 @@ rl.on('line', async (line) => {
       console.log(`[>] Task from ${filePath} posted (${id.slice(0, 8)}…)`)
     } catch (err) {
       console.log(`[!] Error reading file: ${err.message}`)
+    }
+
+  } else if (input.startsWith('bundle ')) {
+    const parts = input.slice(7).trim().split(/\s+/)
+    const filePath = parts[0]
+    const argNames = parts.slice(1)
+    try {
+      const absPath = resolve(filePath)
+      console.log(`[~] Bundling ${filePath} with esbuild…`)
+      const { code } = await bundleTask(absPath, argNames)
+      if (workers.size === 0) {
+        console.log('[!] No workers yet. Task queued.')
+      }
+      const id = crypto.randomUUID()
+      pendingTaskCount++
+      broadcast()
+      await base.append({
+        type: 'task', id, code, argNames, args: [],
+        bundled: true,
+        driveKey, by: requesterId, ts: Date.now()
+      })
+      addConsumed(1)
+      broadcast()
+      console.log(`[>] Bundled task ${id.slice(0, 8)}… posted (${(code.length / 1024).toFixed(1)} KB)`)
+    } catch (err) {
+      console.log(`[!] Bundle failed: ${err.message}`)
     }
 
   } else if (input.startsWith('shell ')) {
