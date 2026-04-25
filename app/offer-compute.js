@@ -43,7 +43,9 @@ function open (s) { return s.get('view', { valueEncoding: 'json' }) }
 async function apply (nodes, view, b) {
   for (const node of nodes) {
     if (node.value.type === 'add-writer') {
-      await b.addWriter(Buffer.from(node.value.key, 'hex'), { indexer: false })
+      try {
+        await b.addWriter(Buffer.from(node.value.key, 'hex'), { indexer: false })
+      } catch {}
     }
     await view.append(node.value)
   }
