@@ -448,10 +448,22 @@ rl.on('line', async (line) => {
 
       const jobRequires = mod.requires || null
       const n = nOverride || Math.max(1, workers.size)
+
+      // Call prepare(drive) if exported — e.g. upload Python scripts to Hyperdrive
+      if (mod.prepare) {
+        console.log('[~] Running job prepare()…')
+        try { await mod.prepare(drive) } catch (err) { console.log(`[!] prepare() failed: ${err.message}`) }
+      }
+
       let chunks = mod.split(mod.data, n, ...extraArgs.slice(1))
       const jobId = crypto.randomUUID()
       const computeCode = mod.compute.toString()
-      const code = `const compute = ${computeCode}; return compute(chunk)`
+      // gpuComputeCode: custom task code that runs python via child_process (GPU jobs)
+      const baseCode = mod.gpuComputeCode
+        ? mod.gpuComputeCode.trim()
+        : `const compute = ${computeCode}; return compute(chunk)`
+      // depAwareCode: alternative code for tasks that receive dependency outputs
+      const depAwareCode = mod.depAwareCode ? mod.depAwareCode.trim() : null
 
       const workerIds = [...workers.values()].map(w => w.id)
       if (workerIds.length === 0) {
@@ -498,22 +510,53 @@ rl.on('line', async (line) => {
         imageHeight
       })
 
+      // Build taskId map for DAG: chunkIndex -> taskId (needed for dependsOn resolution)
+      const chunkTaskIds = Array.from({ length: chunks.length }, () => crypto.randomUUID())
+
       for (const i of chunkOrder) {
-        const taskId = crypto.randomUUID()
+        const taskId = chunkTaskIds[i]
         taskToJob.set(taskId, { jobId, chunkIndex: i })
         // For jobs with requirements, pick capable worker; otherwise round-robin
         const assignedTo = jobRequires
           ? pickWorkerForTask(jobRequires, workers)
           : (workerIds.length > 0 ? workerIds[i % workerIds.length] : null)
-        await base.append({
-          type: 'task', id: taskId, jobId, chunkIndex: i, totalChunks: chunks.length,
-          code, argNames: ['chunk'], args: [chunks[i]],
-          requires: jobRequires || undefined,
-          assignedTo: assignedTo || undefined,
-          driveKey,
-          by: requesterId, ts: Date.now()
-        })
-        pendingTaskRequires.set(taskId, jobRequires || null)
+
+        const chunk = chunks[i]
+
+        // Detect shell chunk: compute() returned { shellCmd, ... }
+        const isShellChunk = chunk && typeof chunk.shellCmd === 'string'
+
+        // Resolve dependsOn: chunk may have dependsOn: [chunkIndex, ...] → map to taskIds
+        const dependsOn = chunk && chunk.dependsOn
+          ? chunk.dependsOn.map(depIdx => chunkTaskIds[depIdx])
+          : undefined
+
+        if (isShellChunk) {
+          const shellRequires = { allowsShell: true, ...jobRequires }
+          await base.append({
+            type: 'task', id: taskId, jobId, chunkIndex: i, totalChunks: chunks.length,
+            taskType: 'shell', cmd: chunk.shellCmd,
+            requires: shellRequires,
+            assignedTo: assignedTo || undefined,
+            driveKey,
+            dependsOn: dependsOn || undefined,
+            by: requesterId, ts: Date.now()
+          })
+          pendingTaskRequires.set(taskId, shellRequires)
+        } else {
+          // Use depAwareCode for tasks with dependencies, baseCode otherwise
+          const taskCode = (dependsOn && dependsOn.length > 0 && depAwareCode) ? depAwareCode : baseCode
+          await base.append({
+            type: 'task', id: taskId, jobId, chunkIndex: i, totalChunks: chunks.length,
+            code: taskCode, argNames: ['chunk'], args: [chunk],
+            requires: jobRequires || undefined,
+            assignedTo: assignedTo || undefined,
+            driveKey,
+            dependsOn: dependsOn || undefined,
+            by: requesterId, ts: Date.now()
+          })
+          pendingTaskRequires.set(taskId, jobRequires || null)
+        }
       }
       pendingTaskCount += chunks.length
       addConsumed(chunks.length)

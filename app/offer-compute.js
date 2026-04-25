@@ -221,13 +221,30 @@ async function processTasks () {
       if (entry.assignedTo && entry.assignedTo !== workerId) continue
       if (entry.requires && !meetsRequirements(entry.requires, myCapabilities)) continue
 
-      // Check if result exists
+      // Scan log once: check result exists + resolve dependsOn outputs
       let hasResult = false
+      const depResults = new Map() // depTaskId -> output
       for (let j = 0; j < base.view.length; j++) {
         const e = await base.view.get(j)
-        if (e.type === 'result' && e.taskId === entry.id) { hasResult = true; break }
+        if (e.type === 'result') {
+          if (e.taskId === entry.id) hasResult = true
+          if (entry.dependsOn && entry.dependsOn.includes(e.taskId)) {
+            depResults.set(e.taskId, e.output)
+          }
+        }
       }
       if (hasResult) { completed.add(entry.id); continue }
+
+      // Block on unresolved dependencies
+      if (entry.dependsOn && entry.dependsOn.length > 0) {
+        const missing = entry.dependsOn.filter(id => !depResults.has(id))
+        if (missing.length > 0) continue // deps not ready yet
+      }
+
+      // Collect dep outputs in order for injection
+      const deps = entry.dependsOn
+        ? entry.dependsOn.map(id => depResults.get(id))
+        : []
 
       completed.add(entry.id)
       didWork = true
@@ -304,7 +321,7 @@ async function processTasks () {
 
         const t0 = performance.now()
         try {
-          const output = await executeTask(entry, inputDrive, outputDrive)
+          const output = await executeTask(entry, inputDrive, outputDrive, null, deps)
           const elapsed = (performance.now() - t0).toFixed(2)
 
           // Guard: base may have been closed if idle timer fired during long task
