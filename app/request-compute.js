@@ -30,6 +30,7 @@ const workers = new Map() // writerKey -> { id, ts }
 const pendingJobs = new Map()
 const taskToJob = new Map()
 let pendingTaskCount = 0
+const pendingTaskRequires = new Map() // taskId -> requires object (null = any worker)
 
 function findJobForTask (taskId) { return taskToJob.get(taskId) || null }
 
@@ -73,12 +74,23 @@ const broadcastConns = new Set()
 
 function broadcast () {
   const rep = loadReputation()
+  // Deduplicated list of requires objects for pending tasks (null entry = task any worker can run)
+  const requiresSeen = new Set()
+  const pendingRequires = []
+  for (const req of pendingTaskRequires.values()) {
+    const key = req ? JSON.stringify(req) : 'null'
+    if (!requiresSeen.has(key)) {
+      requiresSeen.add(key)
+      pendingRequires.push(req)
+    }
+  }
   const msg = JSON.stringify({
     type: 'advertise',
     role: 'requester',
     requesterId,
     autobaseKey,
     pendingTasks: pendingTaskCount,
+    pendingRequires,
     workerCount: workers.size,
     reputation: { donated: rep.donated, consumed: rep.consumed, score: getScore(rep) }
   })
@@ -172,7 +184,10 @@ base.on('update', async () => {
             pendingJobs.delete(jobId)
             // Clean up task-to-job mappings for this completed job
             for (const [taskId, mapping] of taskToJob) {
-              if (mapping.jobId === jobId) taskToJob.delete(taskId)
+              if (mapping.jobId === jobId) {
+                taskToJob.delete(taskId)
+                pendingTaskRequires.delete(taskId)
+              }
             }
             pendingTaskCount = Math.max(0, pendingTaskCount - job.totalChunks)
             broadcast()
@@ -194,6 +209,7 @@ base.on('update', async () => {
         }
         if (entry.elapsed) console.log(`    (${entry.elapsed}ms)`)
         pendingTaskCount = Math.max(0, pendingTaskCount - 1)
+        pendingTaskRequires.delete(entry.taskId)
         broadcast()
         rl.prompt()
       }
@@ -258,6 +274,7 @@ rl.on('line', async (line) => {
       by: requesterId, ts: Date.now()
     })
     pendingTaskCount++
+    pendingTaskRequires.set(id, requires || null)
     addConsumed(1)
     broadcast()
     if (requires) console.log(`[>] Task ${id.slice(0, 8)}… posted (requires: ${JSON.stringify(requires)}, assigned: ${assignedTo || 'any'})`)
@@ -312,6 +329,7 @@ rl.on('line', async (line) => {
           driveKey,
           by: requesterId, ts: Date.now()
         })
+        pendingTaskRequires.set(taskId, jobRequires || null)
       }
       pendingTaskCount += chunks.length
       addConsumed(chunks.length)
@@ -395,6 +413,7 @@ rl.on('line', async (line) => {
       by: requesterId, ts: Date.now()
     })
     pendingTaskCount++
+    pendingTaskRequires.set(id, requires || null)
     addConsumed(1)
     broadcast()
     if (requires) console.log(`[>] Shell task ${id.slice(0, 8)}… posted: ${cmdStr.slice(0, 60)} (requires: ${JSON.stringify(requires)}, assigned: ${assignedTo || 'any'})`)
