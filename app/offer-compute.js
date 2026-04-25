@@ -12,7 +12,7 @@ import { detectCapabilities, meetsRequirements } from './capabilities.js'
 
 const workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
 const storePath = `./store-${workerId}`
-const IDLE_TIMEOUT = 15000 // leave after 15s with no tasks
+const IDLE_TIMEOUT = 60000 // leave after 60s with no tasks
 const ALLOW_SHELL = process.env.ALLOW_SHELL === '1' || process.env.ALLOW_SHELL === 'true'
 
 console.log('╔═══════════════════════════════════════════╗')
@@ -250,6 +250,12 @@ async function processTasks () {
         const output = await executeTask(entry, inputDrive, outputDrive)
         const elapsed = (performance.now() - t0).toFixed(2)
 
+        // Guard: base may have been closed if idle timer fired during long task
+        if (!base || !base.writable) {
+          console.log(`[!] Task ${entry.id.slice(0, 8)}… done but lost connection — result dropped`)
+          continue
+        }
+
         // Check if output files were written
         const outputFiles = []
         if (outputDrive) {
@@ -277,10 +283,12 @@ async function processTasks () {
         }
         console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
       } catch (err) {
-        await base.append({
-          type: 'result', taskId: entry.id, error: err.message,
-          by: workerId, ts: Date.now()
-        })
+        if (base && base.writable) {
+          await base.append({
+            type: 'result', taskId: entry.id, error: err.message,
+            by: workerId, ts: Date.now()
+          })
+        }
         console.log(`[!] Error: ${err.message}\n`)
       }
       resetIdleTimer()
