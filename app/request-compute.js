@@ -190,11 +190,10 @@ Commands:
                          run return Array.from({length:10}, (_,i) => i*i)
                          Tasks with files get: readFile(path), listFiles(), writeFile(path, data)
   file <path.js>       Send a .js file as a single task
-  bundle <path.js> [key=value ...]
+  bundle <path.js> [arg1 arg2 ...]
                        Bundle a task file + its npm deps into one string, send to worker
                          Task file must: export default function (args...) { ... }
-                         Example: bundle tasks/slugify-text.js text="Hello World"
-                         Example: bundle tasks/format-bytes.js bytes=1048576
+                         Example: bundle tasks/resize.js inputPath outputPath
   job <path.js> [n]    Run a distributed job (split across n workers, default=all)
                          Job file exports: data, split(data,n), compute(chunk), join(results)
   shell <command>      Send a shell command to execute on a worker
@@ -308,26 +307,9 @@ rl.on('line', async (line) => {
     }
 
   } else if (input.startsWith('bundle ')) {
-    // Parse: bundle <file> key=value key="value with spaces" ...
-    // or:    bundle <file>  (no args)
-    const raw = input.slice(7).trim()
-    // Match the file path, then key=value pairs (value may be quoted)
-    const fileMatch = raw.match(/^(\S+)\s*(.*)$/s)
-    const filePath = fileMatch[1]
-    const argStr = fileMatch[2] || ''
-    const argNames = []
-    const args = []
-    // Match key=value, key="value with spaces", or key='value with spaces'
-    const argRegex = /(\w+)=(?:"([^"]*)"|'([^']*)'|(\S*))/g
-    let m
-    while ((m = argRegex.exec(argStr)) !== null) {
-      argNames.push(m[1])
-      let val = m[2] ?? m[3] ?? m[4]
-      if (val === 'true') val = true
-      else if (val === 'false') val = false
-      else if (!isNaN(Number(val)) && val !== '') val = Number(val)
-      args.push(val)
-    }
+    const parts = input.slice(7).trim().split(/\s+/)
+    const filePath = parts[0]
+    const argNames = parts.slice(1)
     try {
       const absPath = resolve(filePath)
       console.log(`[~] Bundling ${filePath} with esbuild…`)
@@ -339,7 +321,7 @@ rl.on('line', async (line) => {
       pendingTaskCount++
       broadcast()
       await base.append({
-        type: 'task', id, code, argNames, args,
+        type: 'task', id, code, argNames, args: [],
         bundled: true,
         driveKey, by: requesterId, ts: Date.now()
       })
