@@ -67,6 +67,7 @@
     "hyperswarm": "^4.17.0",
     "inspector": "npm:bare-node-inspector@^1.0.1",
     "module": "npm:bare-node-module@^1.0.0",
+    "ms": "^2.1.3",
     "net": "npm:bare-node-net@^1.0.0",
     "os": "npm:bare-node-os@^1.0.1",
     "path": "npm:bare-node-path",
@@ -95,6 +96,7 @@
   },
   "devDependencies": {
     "brittle": "^3.0.0",
+    "esbuild": "^0.28.0",
     "pear-interface": "^1.0.0"
   }
 }
