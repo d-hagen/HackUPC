@@ -9,20 +9,25 @@ export const data = {
   maxDepth: 12
 }
 
-export function split (data, n) {
-  const rowsPerChunk = Math.ceil(data.height / n)
+export function split (data, gridRows, gridCols = 1) {
+  const blockH = Math.ceil(data.height / gridRows)
+  const blockW = Math.ceil(data.width / gridCols)
   const chunks = []
-  for (let i = 0; i < n; i++) {
-    const startRow = i * rowsPerChunk
-    const endRow = Math.min(startRow + rowsPerChunk, data.height)
-    if (startRow >= data.height) break
-    chunks.push({ ...data, startRow, endRow })
+  for (let gr = 0; gr < gridRows; gr++) {
+    for (let gc = 0; gc < gridCols; gc++) {
+      const startRow = gr * blockH
+      const endRow = Math.min(startRow + blockH, data.height)
+      const startCol = gc * blockW
+      const endCol = Math.min(startCol + blockW, data.width)
+      if (startRow >= data.height || startCol >= data.width) break
+      chunks.push({ ...data, startRow, endRow, startCol, endCol })
+    }
   }
   return chunks
 }
 
 export function compute (chunk) {
-  const { width, height, startRow, endRow, samplesPerPixel, maxDepth } = chunk
+  const { width, height, startRow, endRow, startCol = 0, endCol = width, samplesPerPixel, maxDepth } = chunk
 
   // --- Scene ---
   const spheres = [
@@ -143,7 +148,7 @@ export function compute (chunk) {
   const rows = []
   for (let y = startRow; y < endRow; y++) {
     const row = []
-    for (let x = 0; x < width; x++) {
+    for (let x = startCol; x < endCol; x++) {
       let r = 0, g = 0, b = 0
       for (let s = 0; s < samplesPerPixel; s++) {
         const su = (x + rand()) / width
@@ -152,7 +157,6 @@ export function compute (chunk) {
         const [cr, cg, cb] = rayColor(camOrigin, dir, maxDepth)
         r += cr; g += cg; b += cb
       }
-      // gamma correction
       row.push([
         Math.min(255, Math.floor(Math.sqrt(r / samplesPerPixel) * 255.99)),
         Math.min(255, Math.floor(Math.sqrt(g / samplesPerPixel) * 255.99)),
@@ -162,20 +166,23 @@ export function compute (chunk) {
     rows.push(row)
   }
 
-  return { startRow, endRow, rows }
+  return { startRow, endRow, startCol, endCol, rows }
 }
 
 export function join (results) {
-  results.sort((a, b) => a.startRow - b.startRow)
-  const width = results[0].rows[0].length
-  const height = results.reduce((s, r) => s + r.rows.length, 0)
-
-  // Build PPM file content
-  let ppm = `P3\n${width} ${height}\n255\n`
-  for (const strip of results) {
-    for (const row of strip.rows) {
-      ppm += row.map(([r, g, b]) => `${r} ${g} ${b}`).join(' ') + '\n'
+  const fullW = results.reduce((m, r) => Math.max(m, r.endCol), 0)
+  const fullH = results.reduce((m, r) => Math.max(m, r.endRow), 0)
+  const grid = Array.from({ length: fullH }, () => new Array(fullW).fill(null))
+  for (const block of results) {
+    for (let y = 0; y < block.rows.length; y++) {
+      for (let x = 0; x < block.rows[y].length; x++) {
+        grid[block.startRow + y][block.startCol + x] = block.rows[y][x]
+      }
     }
+  }
+  let ppm = `P3\n${fullW} ${fullH}\n255\n`
+  for (const row of grid) {
+    ppm += row.map(px => px ? `${px[0]} ${px[1]} ${px[2]}` : '0 0 0').join(' ') + '\n'
   }
   return ppm
 }

@@ -244,10 +244,9 @@ base.on('update', async () => {
             try {
               const received = [...job.results.values()].filter(r => r && r.rows)
               if (received.length > 0) {
-                // Always render full image dimensions — place each block at correct position,
-                // gray (40,40,40) for unreceived regions so proportions stay correct
-                const fullW = received.reduce((m, r) => Math.max(m, r.endCol ?? r.rows[0].length), 0)
-                const fullH = received.reduce((m, r) => Math.max(m, r.endRow), 0)
+                // Always use full image dimensions so blocks appear at correct position
+                const fullW = job.imageWidth || received.reduce((m, r) => Math.max(m, r.endCol ?? r.rows[0].length), 0)
+                const fullH = job.imageHeight || received.reduce((m, r) => Math.max(m, r.endRow), 0)
                 const grid = Array.from({ length: fullH }, () => new Array(fullW).fill(null))
                 for (const block of received) {
                   const colOffset = block.startCol ?? 0
@@ -435,11 +434,17 @@ rl.on('line', async (line) => {
         if (previewServer) previewServer.meta(0, chunks.length)
       }
 
+      // Infer full image dimensions from data or chunks for preview positioning
+      const imageWidth = mod.data.width || chunks.reduce((m, c) => Math.max(m, c.endCol ?? (c.rows ? 0 : 0)), 0) || null
+      const imageHeight = mod.data.height || chunks.reduce((m, c) => Math.max(m, c.endRow ?? 0), 0) || null
+
       pendingJobs.set(jobId, {
         totalChunks: chunks.length,
         results: new Map(),
         joinFn: mod.join,
-        outputFile: jobOutputFile
+        outputFile: jobOutputFile,
+        imageWidth,
+        imageHeight
       })
 
       for (let i = 0; i < chunks.length; i++) {
