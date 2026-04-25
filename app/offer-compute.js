@@ -297,6 +297,7 @@ async function processTasks () {
       if (entry.type !== 'task') continue
       if (entry.taskType === 'shell' ? (!ALLOW_SHELL || !entry.cmd) : !entry.code) continue
       if (entry.assignedTo && entry.assignedTo !== workerId) continue
+      if (entry.requires && !meetsRequirements(entry.requires, myCapabilities)) continue
       if (completed.has(entry.id)) continue
       hasRemainingTasks = true
       break
