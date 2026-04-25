@@ -105,12 +105,22 @@ async function leaveCurrentRequester () {
 
   // Leave Autobase replication topic on the replication swarm
   if (leavingDiscoveryKey) {
-    replicationSwarm.leave(leavingDiscoveryKey)
+    await replicationSwarm.leave(leavingDiscoveryKey)
   }
 
-  // Close old base
+  // Close old base and store to clean up replication streams
   if (leavingBase) {
     try { await leavingBase.close() } catch {}
+  }
+  if (leavingStore) {
+    try { await leavingStore.close() } catch {}
+  }
+
+  // Destroy stale replication connections so the next join() gets fresh ones.
+  // Hyperswarm deduplicates — if an old conn survives, 'connection' won't
+  // fire again and the new store never gets replicated.
+  for (const conn of [...replicationSwarm.connections]) {
+    conn.destroy()
   }
 
   // Remove from pool so we don't rejoin immediately
@@ -163,6 +173,7 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   // This creates a fresh connection to the requester, used only for binary
   // Autobase/Corestore protocol — no JSON interference.
   replicationSwarm.join(base.discoveryKey, { client: true, server: true })
+  await replicationSwarm.flush()
 
   // Watch for tasks on new updates
   base.on('update', async () => {
