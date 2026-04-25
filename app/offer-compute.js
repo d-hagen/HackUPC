@@ -204,6 +204,7 @@ async function processTasks () {
   processing = true
 
   let didWork = false
+  const poolPromises = []
 
   try {
     for (let i = 0; i < base.view.length; i++) {
@@ -232,15 +233,15 @@ async function processTasks () {
         ? `[SHELL] ${entry.cmd.trim().slice(0, 60)}`
         : entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
 
-      // Route: pure compute → pool, shell/file-I/O → main thread
+      // Route: pure compute → pool (concurrent), shell/file-I/O → main thread (sequential)
       const needsFiles = entry.code && /\b(readFile|listFiles|writeFile)\b/.test(entry.code)
       const usePool = entry.taskType !== 'shell' && !needsFiles
 
       if (usePool) {
         console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [pool]`)
         const t0 = performance.now()
-        try {
-          const { output, threadId } = await pool.runTask(entry)
+        const taskEntry = entry
+        const p = pool.runTask(taskEntry).then(async ({ output, threadId }) => {
           const elapsed = (performance.now() - t0).toFixed(2)
 
           const outputFiles = []
@@ -251,7 +252,7 @@ async function processTasks () {
           }
 
           await base.append({
-            type: 'result', taskId: entry.id, output,
+            type: 'result', taskId: taskEntry.id, output,
             elapsed: Number(elapsed), by: workerId, ts: Date.now(),
             driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
             outputFiles: outputFiles.length > 0 ? outputFiles : undefined
@@ -262,13 +263,14 @@ async function processTasks () {
           const preview = JSON.stringify(output).slice(0, 80)
           console.log(`[<] Done in ${elapsed}ms | thread #${threadId} | ${preview}`)
           console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
-        } catch (err) {
+        }).catch(async (err) => {
           await base.append({
-            type: 'result', taskId: entry.id, error: err.message,
+            type: 'result', taskId: taskEntry.id, error: err.message,
             by: workerId, ts: Date.now()
           })
           console.log(`[!] Error: ${err.message}\n`)
-        }
+        })
+        poolPromises.push(p)
       } else {
         console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [main]`)
 
@@ -281,7 +283,6 @@ async function processTasks () {
             mountedDrives.set(entry.driveKey, d)
           }
           inputDrive = mountedDrives.get(entry.driveKey)
-          // Wait for drive data to sync from requester (Autobase replicates faster than Hyperdrive)
           for (let attempt = 0; attempt < 10; attempt++) {
             await inputDrive.update()
             if (inputDrive.version > 0) break
@@ -294,7 +295,6 @@ async function processTasks () {
           const output = await executeTask(entry, inputDrive, outputDrive)
           const elapsed = (performance.now() - t0).toFixed(2)
 
-          // Check if output files were written
           const outputFiles = []
           if (outputDrive) {
             for await (const f of outputDrive.list('/')) {
@@ -329,6 +329,11 @@ async function processTasks () {
         }
       }
       resetIdleTimer()
+    }
+
+    // Wait for all pool tasks dispatched this cycle to finish
+    if (poolPromises.length > 0) {
+      await Promise.all(poolPromises)
     }
   } finally {
     processing = false
