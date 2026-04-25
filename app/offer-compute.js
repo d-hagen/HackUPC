@@ -8,7 +8,6 @@ import Hyperdrive from 'hyperdrive'
 import { NETWORK_TOPIC } from './base-setup.js'
 import { executeTask } from './worker.js'
 import { addDonated, loadReputation, getScore } from './reputation.js'
-import { detectCapabilities, meetsRequirements } from './capabilities.js'
 
 const workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
 const storePath = `./store-${workerId}`
@@ -22,13 +21,7 @@ console.log(`║  Worker ID: ${workerId}                ║`)
 console.log('╚═══════════════════════════════════════════╝')
 console.log('')
 console.log(`Idle timeout: ${IDLE_TIMEOUT / 1000}s | Store: ${storePath}`)
-console.log(`Shell execution: ${ALLOW_SHELL ? 'ENABLED' : 'DISABLED (set ALLOW_SHELL=1 to enable)'}`)
-console.log('Detecting capabilities...')
-
-const myCapabilities = await detectCapabilities()
-console.log(`Platform: ${myCapabilities.platform}/${myCapabilities.arch} | CPU: ${myCapabilities.cpuCores} cores | RAM: ${myCapabilities.ramGB}GB`)
-console.log(`GPU: ${myCapabilities.gpuName} (${myCapabilities.gpuType}) | Python: ${myCapabilities.hasPython ? myCapabilities.pythonVersion : 'no'} | PyTorch: ${myCapabilities.hasPyTorch ? myCapabilities.pytorchVersion : 'no'}`)
-console.log()
+console.log(`Shell execution: ${ALLOW_SHELL ? 'ENABLED' : 'DISABLED (set ALLOW_SHELL=1 to enable)'}\n`)
 
 const BOOTSTRAP = process.env.BOOTSTRAP
 const swarmOpts = BOOTSTRAP
@@ -137,10 +130,9 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   await outputDrive.ready()
   mountedDrives.clear()
 
-  // Request to join on discovery connection — include capabilities so requester can route tasks
+  // Request to join (JSON on discovery connection — safe, no replication here)
   conn.write(JSON.stringify({
-    type: 'join-request', role: 'worker', writerKey, workerId,
-    capabilities: myCapabilities
+    type: 'join-request', role: 'worker', writerKey, workerId
   }))
 
   // Join the Autobase topic on the REPLICATION swarm (separate from discovery)
@@ -186,7 +178,6 @@ async function processTasks () {
       if (!entry.code) continue
     }
     if (entry.assignedTo && entry.assignedTo !== workerId) continue
-    if (!meetsRequirements(entry.requires, myCapabilities)) continue
 
     // Check if result exists
     let hasResult = false
