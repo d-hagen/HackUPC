@@ -349,7 +349,7 @@ discoverySwarm.on('connection', (conn) => {
   // NO replication on discovery connections
 })
 
-await discoverySwarm.flush()
+discoverySwarm.flush().then(() => console.log('DHT bootstrap complete.'))
 console.log('Listening for requesters on network...\n')
 
 // Periodically check for requesters if searching

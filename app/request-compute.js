@@ -104,8 +104,8 @@ discoverySwarm.on('connection', (conn) => {
   // NO replication on discovery connections
 })
 
-await discoverySwarm.flush()
-await replicationSwarm.flush()
+Promise.all([discoverySwarm.flush(), replicationSwarm.flush()])
+  .then(() => console.log('DHT bootstrap complete.'))
 console.log('Advertising on network, waiting for workers...\n')
 
 // Watch for results
