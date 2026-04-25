@@ -6,6 +6,7 @@ import crypto from 'crypto'
 import fs from 'fs'
 import { NETWORK_TOPIC } from './base-setup.js'
 import { executeTask } from './worker.js'
+import { addDonated, loadReputation, getScore } from './reputation.js'
 
 const workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
 const storePath = `./store-${workerId}`
@@ -161,6 +162,7 @@ async function processTasks () {
       })
       tasksDone++
       totalTasksDone++
+      addDonated(1)
       const preview = JSON.stringify(output).slice(0, 80)
       console.log(`[<] Done in ${elapsed}ms | ${preview}`)
       console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
@@ -205,22 +207,29 @@ async function processTasks () {
 function pickBestRequester () {
   if (!searching) return
 
-  let best = null
-  let bestTasks = 0 // only pick requesters with > 0 tasks
-
+  // Rank requesters: must have pending tasks, prefer higher reputation score
+  const candidates = []
   for (const [id, info] of availableRequesters) {
-    // Skip stale advertisements (> 30s old)
-    if (Date.now() - info.ts > 30000) continue
-    if (info.pendingTasks > bestTasks) {
-      best = id
-      bestTasks = info.pendingTasks
-    }
+    if (Date.now() - info.ts > 30000) continue // skip stale
+    if (info.pendingTasks <= 0) continue // skip idle
+    const score = info.reputation?.score ?? 0
+    candidates.push({ id, info, score })
   }
 
-  if (best) {
-    const info = availableRequesters.get(best)
-    console.log(`[~] Found ${best} with ${info.pendingTasks} pending task(s)`)
-    joinRequester(best, info.autobaseKey, info.conn)
+  // Sort by reputation score (descending), then by pending tasks (descending)
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score
+    return b.info.pendingTasks - a.info.pendingTasks
+  })
+
+  if (candidates.length > 0) {
+    const pick = candidates[0]
+    const scoreStr = pick.score !== 0 ? ` (reputation: ${pick.score})` : ''
+    console.log(`[~] Found ${pick.id} with ${pick.info.pendingTasks} pending task(s)${scoreStr}`)
+    if (candidates.length > 1) {
+      console.log(`    (${candidates.length - 1} other requester(s) available, picked highest reputation)`)
+    }
+    joinRequester(pick.id, pick.info.autobaseKey, pick.info.conn)
   }
 }
 
@@ -233,18 +242,21 @@ swarm.on('connection', (conn) => {
       const msg = JSON.parse(data.toString())
 
       if (msg.type === 'advertise' && msg.role === 'requester') {
+        const repScore = msg.reputation?.score ?? 0
         availableRequesters.set(msg.requesterId, {
           autobaseKey: msg.autobaseKey,
           pendingTasks: msg.pendingTasks || 0,
           workerCount: msg.workerCount || 0,
+          reputation: msg.reputation || { donated: 0, consumed: 0, score: 0 },
           conn,
           ts: Date.now()
         })
 
         if (searching) {
           if (msg.pendingTasks > 0) {
-            console.log(`[~] Found ${msg.requesterId} (${msg.pendingTasks} pending tasks)`)
-            joinRequester(msg.requesterId, msg.autobaseKey, conn)
+            const scoreStr = repScore !== 0 ? `, reputation: ${repScore}` : ''
+            console.log(`[~] Found ${msg.requesterId} (${msg.pendingTasks} pending tasks${scoreStr})`)
+            pickBestRequester() // let ranking decide instead of joining immediately
           } else {
             console.log(`[~] Found ${msg.requesterId} (no pending tasks, staying available)`)
           }
@@ -273,7 +285,8 @@ setInterval(() => {
 }, 5000)
 
 process.on('SIGINT', async () => {
-  console.log(`\nShutting down… (${totalTasksDone} tasks completed total)`)
+  const rep = loadReputation()
+  console.log(`\nShutting down… (${totalTasksDone} tasks completed, reputation: score=${getScore(rep)})`)
   if (idleTimer) clearTimeout(idleTimer)
   await swarm.destroy()
   if (base) try { await base.close() } catch {}

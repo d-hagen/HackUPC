@@ -1,5 +1,6 @@
 // Task requester: hosts own Autobase, advertises on network, assigns tasks to workers
 import { createBase, NETWORK_TOPIC } from './base-setup.js'
+import { loadReputation, addConsumed, getScore } from './reputation.js'
 import { pathToFileURL } from 'url'
 import { resolve } from 'path'
 import crypto from 'crypto'
@@ -33,13 +34,15 @@ swarm.join(NETWORK_TOPIC, { client: true, server: true })
 const broadcastConns = new Set()
 
 function broadcast () {
+  const rep = loadReputation()
   const msg = JSON.stringify({
     type: 'advertise',
     role: 'requester',
     requesterId,
     autobaseKey,
     pendingTasks: pendingTaskCount,
-    workerCount: workers.size
+    workerCount: workers.size,
+    reputation: { donated: rep.donated, consumed: rep.consumed, score: getScore(rep) }
   })
   for (const conn of broadcastConns) {
     try { conn.write(msg) } catch {}
@@ -52,12 +55,14 @@ swarm.on('connection', (conn) => {
   conn.on('error', () => broadcastConns.delete(conn))
 
   // Send advertisement immediately
+  const rep = loadReputation()
   conn.write(JSON.stringify({
     type: 'advertise',
     role: 'requester',
     requesterId,
     autobaseKey,
     pendingTasks: pendingTaskCount,
+    reputation: { donated: rep.donated, consumed: rep.consumed, score: getScore(rep) },
     workerCount: workers.size
   }))
 
@@ -184,6 +189,8 @@ rl.on('line', async (line) => {
       type: 'task', id, code, argNames: [], args: [],
       by: requesterId, ts: Date.now()
     })
+    addConsumed(1)
+    broadcast()
     console.log(`[>] Task ${id.slice(0, 8)}… posted`)
 
   } else if (input.startsWith('job ')) {
@@ -232,6 +239,8 @@ rl.on('line', async (line) => {
           by: requesterId, ts: Date.now()
         })
       }
+      addConsumed(chunks.length)
+      broadcast()
       console.log(`[>] ${chunks.length} subtasks posted`)
 
     } catch (err) {
@@ -252,6 +261,8 @@ rl.on('line', async (line) => {
         type: 'task', id, code, argNames: [], args: [],
         by: requesterId, ts: Date.now()
       })
+      addConsumed(1)
+      broadcast()
       console.log(`[>] Task from ${filePath} posted (${id.slice(0, 8)}…)`)
     } catch (err) {
       console.log(`[!] Error reading file: ${err.message}`)
@@ -280,10 +291,12 @@ rl.on('line', async (line) => {
     if (count === 0) console.log('No results yet.')
 
   } else if (input === 'status') {
+    const rep = loadReputation()
     console.log(`Autobase entries: ${base.view.length}`)
     console.log(`Workers: ${workers.size}`)
     console.log(`Pending tasks: ${pendingTaskCount}`)
     console.log(`Results received: ${printedResults.size}`)
+    console.log(`Reputation: score=${getScore(rep)} (donated=${rep.donated}, consumed=${rep.consumed})`)
 
   } else if (input === 'help') {
     showHelp()
