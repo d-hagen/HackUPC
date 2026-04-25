@@ -188,43 +188,6 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   console.log(`[~] Connected to ${requesterId}, waiting for authorization...\n`)
 }
 
-async function appendResult (entry, output, elapsed) {
-  if (!base) return
-  const outputFiles = []
-  if (outputDrive) {
-    for await (const f of outputDrive.list('/')) {
-      outputFiles.push(f.key)
-    }
-  }
-  await base.append({
-    type: 'result', taskId: entry.id, output,
-    elapsed: Number(elapsed), by: workerId, ts: Date.now(),
-    driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
-    outputFiles: outputFiles.length > 0 ? outputFiles : undefined
-  })
-  tasksDone++
-  totalTasksDone++
-  addDonated(1)
-  if (entry.taskType === 'shell' && output) {
-    const stdoutPreview = (output.stdout || '').trim().slice(0, 80)
-    console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
-    if (output.timedOut) console.log(`    [!] Process timed out`)
-  } else {
-    const preview = JSON.stringify(output).slice(0, 80)
-    console.log(`[<] Done in ${elapsed}ms | ${preview}`)
-  }
-  console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
-}
-
-async function appendError (entry, message) {
-  if (!base) return
-  await base.append({
-    type: 'result', taskId: entry.id, error: message,
-    by: workerId, ts: Date.now()
-  })
-  console.log(`[!] Error: ${message}\n`)
-}
-
 async function processTasks () {
   if (!base || !base.writable || processing) return
   processing = true
@@ -258,8 +221,7 @@ async function processTasks () {
         ? `[SHELL] ${entry.cmd.trim().slice(0, 60)}`
         : entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
 
-      // Pure compute tasks (no file I/O, no shell) go to thread pool
-      // driveKey is always sent by requester, so check if code actually uses file helpers
+      // Route: pure compute → pool, shell/file-I/O → main thread
       const needsFiles = entry.code && /\b(readFile|listFiles|writeFile)\b/.test(entry.code)
       const usePool = entry.taskType !== 'shell' && !needsFiles
 
@@ -269,9 +231,32 @@ async function processTasks () {
         try {
           const output = await pool.runTask(entry)
           const elapsed = (performance.now() - t0).toFixed(2)
-          await appendResult(entry, output, elapsed)
+
+          const outputFiles = []
+          if (outputDrive) {
+            for await (const f of outputDrive.list('/')) {
+              outputFiles.push(f.key)
+            }
+          }
+
+          await base.append({
+            type: 'result', taskId: entry.id, output,
+            elapsed: Number(elapsed), by: workerId, ts: Date.now(),
+            driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
+            outputFiles: outputFiles.length > 0 ? outputFiles : undefined
+          })
+          tasksDone++
+          totalTasksDone++
+          addDonated(1)
+          const preview = JSON.stringify(output).slice(0, 80)
+          console.log(`[<] Done in ${elapsed}ms | ${preview}`)
+          console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
         } catch (err) {
-          await appendError(entry, err.message)
+          await base.append({
+            type: 'result', taskId: entry.id, error: err.message,
+            by: workerId, ts: Date.now()
+          })
+          console.log(`[!] Error: ${err.message}\n`)
         }
       } else {
         console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [main]`)
@@ -297,9 +282,39 @@ async function processTasks () {
         try {
           const output = await executeTask(entry, inputDrive, outputDrive)
           const elapsed = (performance.now() - t0).toFixed(2)
-          await appendResult(entry, output, elapsed)
+
+          // Check if output files were written
+          const outputFiles = []
+          if (outputDrive) {
+            for await (const f of outputDrive.list('/')) {
+              outputFiles.push(f.key)
+            }
+          }
+
+          await base.append({
+            type: 'result', taskId: entry.id, output,
+            elapsed: Number(elapsed), by: workerId, ts: Date.now(),
+            driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
+            outputFiles: outputFiles.length > 0 ? outputFiles : undefined
+          })
+          tasksDone++
+          totalTasksDone++
+          addDonated(1)
+          if (entry.taskType === 'shell' && output) {
+            const stdoutPreview = (output.stdout || '').trim().slice(0, 80)
+            console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
+            if (output.timedOut) console.log(`    [!] Process timed out`)
+          } else {
+            const preview = JSON.stringify(output).slice(0, 80)
+            console.log(`[<] Done in ${elapsed}ms | ${preview}`)
+          }
+          console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
         } catch (err) {
-          await appendError(entry, err.message)
+          await base.append({
+            type: 'result', taskId: entry.id, error: err.message,
+            by: workerId, ts: Date.now()
+          })
+          console.log(`[!] Error: ${err.message}\n`)
         }
       }
       resetIdleTimer()
