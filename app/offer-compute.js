@@ -259,7 +259,9 @@ async function processTasks () {
         : entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
 
       // Pure compute tasks (no file I/O, no shell) go to thread pool
-      const usePool = entry.taskType !== 'shell' && !entry.driveKey
+      // driveKey is always sent by requester, so check if code actually uses file helpers
+      const needsFiles = entry.code && /\b(readFile|listFiles|writeFile)\b/.test(entry.code)
+      const usePool = entry.taskType !== 'shell' && !needsFiles
 
       if (usePool) {
         console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [pool]`)
