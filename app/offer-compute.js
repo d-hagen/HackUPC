@@ -306,7 +306,7 @@ async function processTasks () {
     if (!hasRemainingTasks) {
       let betterOption = false
       for (const [id, info] of availableRequesters) {
-        if (id !== currentRequester && info.pendingTasks > 0 && Date.now() - info.ts < 30000) {
+        if (id !== currentRequester && info.pendingTasks > 0 && Date.now() - info.ts < 30000 && canHelpRequester(info)) {
           betterOption = true
           break
         }
@@ -407,6 +407,8 @@ detectCapabilities().then(caps => {
   Object.assign(myCapabilities, caps)
   console.log(`Platform: ${caps.platform}/${caps.arch} | CPU: ${caps.cpuCores} cores | RAM: ${caps.ramGB}GB`)
   console.log(`GPU: ${caps.gpuName} (${caps.gpuType}) | Python: ${caps.hasPython ? caps.pythonVersion : 'no'} | PyTorch: ${caps.hasPyTorch ? caps.pytorchVersion : 'no'}`)
+  // Re-evaluate known requesters now that caps are populated
+  if (searching) pickBestRequester()
 })
 
 discoverySwarm.flush().then(() => console.log('DHT bootstrap complete.'))

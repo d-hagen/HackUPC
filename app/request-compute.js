@@ -353,6 +353,7 @@ rl.on('line', async (line) => {
         driveKey, by: requesterId, ts: Date.now()
       })
       pendingTaskCount++
+      pendingTaskRequires.set(id, null)
       addConsumed(1)
       broadcast()
       console.log(`[>] Task from ${filePath} posted (${id.slice(0, 8)}…)`)
@@ -372,13 +373,13 @@ rl.on('line', async (line) => {
         console.log('[!] No workers yet. Task queued.')
       }
       const id = crypto.randomUUID()
-      pendingTaskCount++
-      broadcast()
       await base.append({
         type: 'task', id, code, argNames, args: [],
         bundled: true,
         driveKey, by: requesterId, ts: Date.now()
       })
+      pendingTaskCount++
+      pendingTaskRequires.set(id, null)
       addConsumed(1)
       broadcast()
       console.log(`[>] Bundled task ${id.slice(0, 8)}… posted (${(code.length / 1024).toFixed(1)} KB)`)
