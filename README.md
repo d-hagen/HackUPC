@@ -1,6 +1,39 @@
-# PeerCompute — Project Snapshot & Roadmap
+# PeerCompute
 
-**P2P shared computing platform on the Pear protocol. No servers, no cloud — peers share CPU power over Hypercore.**
+**A zero-infrastructure P2P compute-sharing platform built on the Pear protocol. Your swarm is your supercomputer.**
+
+No servers, no cloud, no blockchain, no tokens — just peers sharing CPU power over Hypercore.
+
+---
+
+## What Is This?
+
+PeerCompute turns idle laptops into a distributed supercomputer. Anyone can **offer** spare CPU power or **request** computation from the network. Peers discover each other automatically via Hyperswarm DHT, exchange tasks through Autobase (a distributed append-only log), and route work based on a reputation system — all without a single server.
+
+### Why It Matters
+
+Every existing P2P compute platform requires significant infrastructure: BOINC needs a central server, Golem needs Ethereum and Docker, Render Network needs blockchain custody. PeerCompute needs **nothing** — two laptops and `npm install`.
+
+The core innovation is using **Autobase as a distributed task queue**. Nobody has done this before. Autobase was designed for syncing documents (like Keet chat or PearPass). We repurpose it as an event-sourced job scheduler: tasks, claims, and results are all entries in the same append-only log, replicated across peers via Hyperswarm.
+
+### How It Works
+
+1. **Requester** starts up, creates an Autobase, and advertises on the network with a reputation score
+2. **Workers** discover available requesters, pick the highest-reputation one with pending tasks, and join
+3. Requester posts tasks — either single JS functions or distributed jobs that **split** data across N workers
+4. Workers execute tasks, write results back to the Autobase
+5. For distributed jobs, the requester **joins** all chunk results into a final output
+6. When idle, workers automatically roam to find the next requester with work
+
+### How It Compares
+
+| | **PeerCompute** | **BOINC** | **Golem** | **Render Network** |
+|---|---|---|---|---|
+| Infrastructure | None | Central server | Ethereum + Docker | Blockchain |
+| Setup | `npm install` | Install client + project app | Install Golem + Docker + yagna | OctaneRender + RNDR app |
+| Payment | Reputation (no money) | Volunteer only | ETH/GLM tokens | RNDR tokens |
+| Task queue | Autobase P2P log | Server database | Smart contracts | Centralized |
+| Code | ~500 lines JS | Tens of thousands | Tens of thousands + Docker | Proprietary |
 
 ---
 
