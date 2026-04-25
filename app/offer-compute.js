@@ -97,14 +97,14 @@ async function leaveCurrentRequester () {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
   if (taskPollTimer) { clearInterval(taskPollTimer); taskPollTimer = null }
 
-  // Leave Autobase replication topic on the replication swarm
-  if (leavingDiscoveryKey) {
-    replicationSwarm.leave(leavingDiscoveryKey)
-  }
-
-  // Close old base
+  // Close old base before leaving the swarm topic
   if (leavingBase) {
     try { await leavingBase.close() } catch {}
+  }
+
+  // Await leave so the topic is fully released before a rejoin
+  if (leavingDiscoveryKey) {
+    await replicationSwarm.leave(leavingDiscoveryKey)
   }
 
   // Remove from pool so we don't rejoin immediately
@@ -157,6 +157,14 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   // This creates a fresh connection to the requester, used only for binary
   // Autobase/Corestore protocol — no JSON interference.
   replicationSwarm.join(base.discoveryKey, { client: true, server: true })
+
+  // Replicate on any already-open connections (may exist from prior session)
+  for (const conn of replicationSwarm.connections) {
+    store.replicate(conn)
+  }
+
+  // Ensure the swarm is connected before we start the idle timer
+  await replicationSwarm.flush()
 
   // Watch for tasks on new updates
   base.on('update', async () => {
