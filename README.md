@@ -20,10 +20,11 @@ The core innovation is using **Autobase as a distributed task queue**. Nobody ha
 
 1. **Requester** starts up, creates an Autobase, and advertises on the network with a reputation score
 2. **Workers** discover available requesters, pick the highest-reputation one with pending tasks, and join
-3. Requester posts tasks — either single JS functions or distributed jobs that **split** data across N workers
-4. Workers execute tasks, write results back to the Autobase
-5. For distributed jobs, the requester **joins** all chunk results into a final output
-6. When idle, workers automatically roam to find the next requester with work
+3. Workers announce their **hardware capabilities** (GPU, CPU cores, RAM, Python/PyTorch availability) — requesters route tasks to the best-fit worker
+4. Requester posts tasks — single JS functions, bundled modules with npm dependencies, shell commands, or distributed jobs that **split** data across N workers
+5. Workers execute tasks, write results back to the Autobase
+6. For distributed jobs, the requester **joins** all chunk results into a final output
+7. When idle, workers automatically roam to find the next requester with work
 
 ### How It Compares
 
@@ -33,7 +34,9 @@ The core innovation is using **Autobase as a distributed task queue**. Nobody ha
 | Setup | `npm install` | Install client + project app | Install Golem + Docker + yagna | OctaneRender + RNDR app |
 | Payment | Reputation (no money) | Volunteer only | ETH/GLM tokens | RNDR tokens |
 | Task queue | Autobase P2P log | Server database | Smart contracts | Centralized |
-| Code | ~500 lines JS | Tens of thousands | Tens of thousands + Docker | Proprietary |
+| Dependency bundling | esbuild (auto-inlined) | Manual packaging | Docker containers | N/A |
+| Hardware routing | Auto-detect GPU/CPU/RAM | Manual project selection | Provider profiles | Manual selection |
+| Code | ~1,500 lines JS | Tens of thousands | Tens of thousands + Docker | Proprietary |
 
 ### Why This Matters for Pear/Holepunch
 
@@ -56,16 +59,29 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 | **Shared Autobase setup** | `base-setup.js` | Done — creates Autobase + Hyperswarm + Hyperdrive, handles local/public DHT |
 | **Reputation system** | `reputation.js` | Done — local ledger (donated/consumed), score broadcast in advertisements |
 | **File transfer (Hyperdrive)** | `base-setup.js` + `worker.js` | Done — upload/download files between peers, task code gets `readFile()`/`writeFile()` |
+| **npm/module bundler** | `bundler.js` | Done — bundles task code + all npm dependencies into a self-contained string via esbuild. Workers don't need packages pre-installed |
+| **Hardware capability detection** | `capabilities.js` | Done — detects GPU (CUDA/MPS/ROCm), CPU cores, RAM, Python, PyTorch. Workers announce capabilities, requesters route tasks to best-fit worker |
 
-### Task Distribution
+### Task Types
 | Feature | Status |
 |---|---|
 | **Single task execution** | Done — `run <code>` sends any JS to a worker |
 | **File-based tasks** | Done — `file <path.js>` sends a .js file as task |
+| **Bundled tasks with npm deps** | Done — `bundle <path.js> [args]` uses esbuild to inline all npm imports, workers execute without needing packages installed |
 | **Distributed jobs (split/join)** | Done — `job <path.js> [n]` splits data across N workers, joins results |
 | **Shell command execution** | Done — `shell <command>` runs any shell command on a worker (`ALLOW_SHELL=1`) |
 | **Task timeout + kill** | Done — shell tasks have configurable timeout (default 60s), SIGKILL on expiry |
 | **Worker assignment** | Done — round-robin `assignedTo` prevents duplicate computation |
+
+### Capability-Based Routing
+| Feature | Status |
+|---|---|
+| **GPU detection** | Done — NVIDIA CUDA via `nvidia-smi`, Apple Silicon MPS via `sysctl`, AMD ROCm via `rocm-smi` |
+| **CPU/RAM profiling** | Done — core count, memory, architecture, platform |
+| **Python/PyTorch detection** | Done — version check, CUDA/MPS availability for PyTorch |
+| **Requirement matching** | Done — `meetsRequirements(requires, caps)` checks GPU, CPU, RAM, platform, Python, shell access |
+| **Smart worker selection** | Done — `pickWorkerForTask()` filters eligible workers, sorts by GPU then CPU cores |
+| **PyTorch device routing** | Done — `bestTorchDevice()` returns optimal device string (cuda/mps/cpu) |
 
 ### Marketplace Model
 | Feature | Status |
@@ -77,45 +93,57 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 | **Unique worker stores** | Done — `store-${workerId}` avoids collisions |
 | **Proper cleanup on leave** | Done — closes base, leaves topic, clears pool |
 
-### Example Jobs
+### Reliability
+| Feature | Status |
+|---|---|
+| **Worker rejoin guard** | Done — `joining` flag prevents concurrent join attempts |
+| **Broadcast connection tracking** | Done — maintains active connection set, cleans up on close/error |
+| **Stale core handling** | Done — try/catch around `addWriter` in apply prevents stale cores from blocking the view |
+| **Race condition fixes** | Done — atomic state transitions, guard flags for concurrent operations |
+
+### Example Bundled Tasks
+| Task | File | What it does |
+|---|---|---|
+| Duration formatter | `tasks/hello-ms.js` | Bundles the `ms` npm package to format milliseconds |
+| URL slug generator | `tasks/slugify-text.js` | Bundles the `slugify` npm package to create URL-safe strings |
+| Byte formatter | `tasks/format-bytes.js` | Bundles `ms` + custom logic with argument forwarding |
+
+### Example Distributed Jobs
 | Job | File | What it does |
 |---|---|---|
 | Sum array | `jobs/sum-job.js` | Splits 1000 numbers, sums in parallel, joins |
 | Find primes | `jobs/primes-job.js` | Splits range, sieves in parallel, merges sorted |
 | Mandelbrot | `jobs/mandelbrot-job.js` | Splits image into row chunks, renders in parallel, assembles ASCII art |
+| GPU benchmark | `jobs/gpu-benchmark-job.js` | Splits matrix sizes across workers, benchmarks GPU via PyTorch |
+| Statistics (Python) | `jobs/stats-task.js` + `jobs/stats.py` | Computes sum/count/min/max/mean on data via Python subprocess |
 
 ### Tests & Demos
 | File | What it tests |
 |---|---|
-| `demo.js` | Self-contained: matrix multiply + Mandelbrot with Hyperswarm fallback |
-| `demo-generic.js` | 6 different generic tasks (arithmetic, fibonacci, matrix, primes, sort, mandelbrot) |
-| `test-full.js` | Matrix + Mandelbrot via `replicateAndSync` |
-| `test-jobs.js` | Split/join with 2 workers, all 3 job types |
-| `test-marketplace.js` | 2 requesters + 2 workers, isolation verification |
-| `test-hyperdrive.js` | File upload/download between requester and worker via Hyperdrive |
+| `test/index.test.js` | 20+ bundling tests — npm dep inlining, execution, error propagation |
+| `test/slugify-bundle.test.js` | 14 slugify-specific tests — special chars, unicode, edge cases |
+| `test/test-capabilities.js` | 39 capability tests — requirement matching, worker selection, device routing |
+| `test/test-pipeline.js` | Full E2E pipeline — upload Python script to Hyperdrive, split data, workers run Python, join results |
+| `demos/demo.js` | Self-contained: matrix multiply + Mandelbrot with Hyperswarm fallback |
+| `demos/demo-generic.js` | 6 different generic tasks (arithmetic, fibonacci, matrix, primes, sort, mandelbrot) |
+| `test/test-full.js` | Matrix + Mandelbrot via `replicateAndSync` |
+| `test/test-jobs.js` | Split/join with 2 workers, all 3 job types |
+| `test/test-marketplace.js` | 2 requesters + 2 workers, isolation verification |
+| `test/test-hyperdrive.js` | File upload/download between requester and worker via Hyperdrive |
 
 ---
 
 ## What's Missing / Next Steps
 
-### 1. Real Large-Scale Computing Tasks
+### 1. Scaling & Performance
 
-**Current limitation:** Tasks are JS function bodies or shell commands. No imports, no GPU, no sandboxing yet.
-
-| Feature | What | Why | Effort |
-|---|---|---|---|
-| ~~**Subprocess execution**~~ | ~~Workers run shell commands via `child_process`~~ | ~~Unlocks any language/tool~~ | **Done** |
-| ~~**File transfer via Hyperdrive**~~ | ~~Send/receive files (datasets, images, models) alongside tasks~~ | ~~JSON can't carry GBs of data~~ | **Done** |
-| ~~**Binary data support**~~ | ~~`Buffer`/`ArrayBuffer` via Hyperdrive~~ | ~~Images, audio, model weights~~ | **Done** |
-| ~~**Task timeout + kill**~~ | ~~Kill subprocess after N seconds~~ | ~~Infinite loops block workers~~ | **Done** |
-| **npm/module support** | Bundle dependencies with task code, or pre-install on workers | Real code needs libraries | Medium |
-| **Worker thread pool** | `worker_threads` for parallel task execution per worker | One task at a time wastes multi-core CPUs | Medium |
-| **WASM sandbox** | Execute WASM modules for safe, portable, near-native compute | Security + performance + language-agnostic | High |
-| **GPU access** | WebGPU/WGSL or native CUDA passthrough | ML inference, rendering, crypto | High |
-| **Streaming results** | Partial/progress updates during long tasks | Users need feedback on 10-min renders | Low |
-| **Task dependencies** | DAG of tasks: B runs only after A completes | Multi-stage pipelines (preprocess → train → evaluate) | Medium |
-
-**Subprocess execution + file transfer are done.** Workers can run `python`, `ffmpeg`, `blender`, etc. via `shell <command>` (opt-in with `ALLOW_SHELL=1`). Timeout kills runaway processes. File transfer via Hyperdrive handles input/output data.
+| Feature | What | Effort |
+|---|---|---|
+| **Worker thread pool** | `worker_threads` for parallel task execution per worker | Medium |
+| **WASM sandbox** | Execute WASM modules for safe, portable, near-native compute | High |
+| **GPU access (native)** | WebGPU/WGSL or native CUDA passthrough (currently possible via shell + PyTorch) | High |
+| **Streaming results** | Partial/progress updates during long tasks | Low |
+| **Task dependencies** | DAG of tasks: B runs only after A completes | Medium |
 
 ### 2. UI & App
 
@@ -131,24 +159,16 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 | **Peer network graph** | Visual map of connected peers and data flow | Medium |
 | **Terminal UI (blessed/ink)** | Rich CLI with panels, progress bars, live updates (no browser needed) | Medium |
 
-**Priority for demo:** Terminal UI with live task progress would be highest impact for least effort. Pear desktop app is the "real" version.
-
 ### 3. Refine Task Splitting
-
-**Current state:** Job files define `split()`, `compute()`, `join()`. Splitting is manual and static.
 
 | Feature | What | Effort |
 |---|---|---|
-| **Auto-split by worker count** | Default `n = workers.size`, auto-adjust as workers join/leave | Low (partially done) |
 | **Adaptive chunk sizing** | Benchmark workers, give bigger chunks to faster ones | Medium |
 | **Work stealing** | If worker A finishes early, it takes a chunk from worker B's queue | Medium |
 | **Streaming split** | For huge datasets: split lazily, stream chunks as workers request | High |
 | **Auto-retry failed chunks** | If a worker crashes, reassign its chunks to other workers | Low |
 | **Progress tracking per chunk** | Show which chunks are pending/running/done in real-time | Low |
 | **Built-in splitters** | Library of common split patterns: by rows, by array slice, by file list | Low |
-| **Recursive splitting** | If a chunk is too large for one worker, it can sub-split | High |
-
-**Priority:** Auto-retry + progress tracking are quick wins. Work stealing is the impressive demo feature.
 
 ### 4. Pay-for-Compute (Concept)
 
@@ -160,21 +180,15 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 | **Attestation-based credits** | Workers sign attestations of compute delivered. Requesters can verify. | Medium — needs crypto signatures |
 | **Token/credit system** | Peers earn credits for computing, spend credits for requesting. Tracked in a shared Autobase. | Medium — needs shared state + anti-cheat |
 | **Blockchain settlement** | Actual payments via Ethereum/Solana smart contracts. Workers get paid per task. | Out of scope — but architecture supports it as a layer |
-| **Dummy marketplace UI** | Show "balance: 50 credits" and "cost: 3 credits" in the UI. No real money. | Low — UI only, demonstrates the concept |
-
-**Priority for hackathon:** Dummy marketplace UI showing credits being earned and spent. No real payment needed — just show the flow.
 
 ### 5. Other Improvements
 
 | Feature | What | Effort |
 |---|---|---|
-| **Result verification** | Send same task to 2 workers, compare results. Flag mismatches. | Low |
-| **Capability announcement** | Workers report CPU cores, RAM, GPU. Requesters route tasks to best fit. | Low |
-| **Encryption (optional)** | Encrypt task data for specific worker's public key. Worker decrypts, computes, encrypts result. | High |
-| **Churn recovery** | If worker disconnects mid-task, timeout → reassign to another worker | Low |
+| **Encryption (optional)** | Encrypt task data for specific worker's public key | High |
+| **Churn recovery** | If worker disconnects mid-task, timeout and reassign to another worker | Low |
 | **Peer health monitoring** | Heartbeat messages, detect dead workers, remove from pool | Low |
 | **Rate limiting** | Prevent spam: max tasks per minute per requester | Low |
-| **Logging & metrics** | Structured logs, compute time histograms, network stats | Low |
 | **Config file** | `peercompute.json` for idle timeout, store path, bootstrap, etc. | Low |
 
 ---
@@ -191,7 +205,9 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 │  results        │         Autobase replication    │  score          │
 │                 │◄──────────────────────────────►│                 │
 └─────────────────┘                                └─────────────────┘
-
+                                                     capabilities:
+                                                     GPU, CPU, RAM,
+                                                     Python, PyTorch
 ┌─────────────────┐                                ┌─────────────────┐
 │  Requester B    │◄──────── Hyperswarm DHT ───────►│  Worker 2       │
 │                 │          (discovery)            │                 │
@@ -203,6 +219,44 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 └─────────────────┘                                └─────────────────┘
 ```
 
+### Dual-Swarm Design
+
+The system uses **two separate Hyperswarm instances** per peer:
+
+1. **Discovery swarm** (joins `NETWORK_TOPIC`): lightweight JSON signaling — requesters broadcast advertisements (reputation score, pending task count), workers send join-requests with their hardware capabilities.
+2. **Replication swarm** (joins `base.discoveryKey`): binary Protomux protocol for Autobase + Corestore + Hyperdrive replication.
+
+Mixing JSON writes with binary replication on the same swarm corrupts the Protomux protocol. Never combine them.
+
+### Task Bundling Pipeline
+
+```
+task.js (imports npm packages)
+        │
+        ▼
+   esbuild (bundle: true, platform: node)
+        │
+        ▼
+   Self-contained code string (all deps inlined)
+        │
+        ▼
+   Posted to Autobase as task entry
+        │
+        ▼
+   Worker executes via AsyncFunction (no npm install needed)
+```
+
+### Capability-Based Routing
+
+```
+Worker announces:  { gpu: 'NVIDIA RTX 4090', cores: 16, ram: 32,
+                     hasCUDA: true, hasPyTorch: true, ... }
+
+Task requires:     { hasGPU: true, hasPyTorch: true, minCores: 8 }
+
+pickWorkerForTask() → filters eligible → sorts by GPU, then cores → assigns
+```
+
 ## File Structure
 
 ```
@@ -210,19 +264,41 @@ app/
 ├── request-compute.js     # Requester CLI (main entry point)
 ├── offer-compute.js       # Worker CLI (main entry point)
 ├── base-setup.js          # Shared Autobase + Hyperswarm setup
-├── worker.js              # Generic JS task executor
+├── worker.js              # Generic JS/shell task executor
+├── bundler.js             # esbuild task bundler (inlines npm deps)
+├── capabilities.js        # Hardware detection & capability routing
 ├── reputation.js          # Local reputation ledger
 ├── boot.js                # Local DHT bootstrap (for testing)
+├── tasks/                 # Example bundled tasks (with npm deps)
+│   ├── hello-ms.js        # Uses `ms` package
+│   ├── slugify-text.js    # Uses `slugify` package
+│   └── format-bytes.js    # Uses `ms` + arguments
 ├── jobs/                  # Example distributed jobs
 │   ├── sum-job.js
 │   ├── primes-job.js
-│   └── mandelbrot-job.js
-├── mandelbrot.js          # Mandelbrot compute functions
-├── matrix.js              # Matrix multiply functions
-├── demo.js                # Self-contained demo (single process)
-├── demo-generic.js        # Generic task demo (6 task types)
-├── test-*.js              # Test scripts
-├── peer-a.js / peer-b.js  # Earlier peer prototypes
+│   ├── mandelbrot-job.js
+│   ├── gpu-benchmark-job.js
+│   ├── gpu-benchmark.py   # Standalone GPU benchmark (PyTorch)
+│   ├── stats-task.js
+│   └── stats.py
+├── test/                  # Tests (brittle + integration)
+│   ├── index.test.js      # Bundling tests
+│   ├── slugify-bundle.test.js
+│   ├── test-capabilities.js   # Capability detection tests
+│   ├── test-pipeline.js       # E2E pipeline test (Python + Hyperdrive)
+│   ├── test-jobs.js           # Distributed job tests
+│   ├── test-marketplace.js    # Multi-requester isolation test
+│   ├── test-hyperdrive.js     # File transfer test
+│   └── test-full.js           # Matrix + Mandelbrot test
+├── demos/                 # Demo scripts
+│   ├── demo.js            # Self-contained demo (single process)
+│   ├── demo-generic.js    # Generic task demo (6 task types)
+│   ├── peer.js            # Minimal peer example
+│   ├── peer-a.js          # Requester peer
+│   └── peer-b.js          # Worker peer
+├── examples/              # Standalone compute examples
+│   ├── mandelbrot.js      # Mandelbrot compute functions
+│   └── matrix.js          # Matrix multiply functions
 └── package.json
 ```
 
@@ -235,10 +311,86 @@ node request-compute.js
 
 # Laptop 2 (worker)
 cd app && npm install
-node offer-compute.js
+ALLOW_SHELL=1 node offer-compute.js
 
 # In requester prompt:
 run return 2 + 2
+file tasks/hello-ms.js
+bundle tasks/slugify-text.js "Hello World"
+shell python3 -c "print(2+2)"
 job jobs/mandelbrot-job.js 4
+upload data.csv
 status
 ```
+
+### Local Development (single machine)
+
+```bash
+cd app && npm install
+
+# Terminal 1: start local DHT bootstrap
+node boot.js
+
+# Terminal 2: requester
+BOOTSTRAP=localhost:8000 node request-compute.js
+
+# Terminal 3: worker
+BOOTSTRAP=localhost:8000 ALLOW_SHELL=1 node offer-compute.js
+```
+
+### Environment Variables
+
+- `BOOTSTRAP=host:port` — DHT bootstrap node address for local testing
+- `ALLOW_SHELL=1` — opt-in to enable shell command execution on workers
+
+### Requester Commands
+
+| Command | Description |
+|---|---|
+| `run <code>` | Execute arbitrary JS code on a worker |
+| `file <path.js>` | Send a .js file as a task |
+| `bundle <path.js> [args]` | Bundle task + npm deps with esbuild, send to worker |
+| `job <path.js> [n]` | Run distributed job split across N workers |
+| `shell <cmd>` | Run shell command on a worker (requires `ALLOW_SHELL=1`) |
+| `upload <file> [name]` | Upload file to shared Hyperdrive |
+| `download <path>` | Download file from worker's output drive |
+| `files` | List uploaded files |
+| `workers` | List connected workers |
+| `results` | Show all task results |
+| `status` | Show network status and reputation |
+| `help` | Show help |
+
+---
+
+## Prioritized Roadmap (assuming Scaling & Performance + UI are done)
+
+### Tier 1 — High Impact, Low Effort (Do First)
+
+| # | Feature | Why | Effort |
+|---|---|---|---|
+| 1 | **Auto-retry failed chunks** | A single worker crash kills a distributed job. Timeout + reassign makes the system actually reliable for real workloads. | Low |
+| 2 | **Churn recovery** | Workers disconnect mid-task constantly in P2P. Timeout + reassign is table stakes for any demo that isn't on localhost. | Low |
+| 3 | **Peer health monitoring (heartbeats)** | Needed to make retry and churn recovery work well. Detect dead workers so you're not waiting for arbitrary timeouts. | Low |
+
+### Tier 2 — Differentiators for the Demo
+
+| # | Feature | Why | Effort |
+|---|---|---|---|
+| 4 | **Task dependencies (DAG)** | Separates "distributed function runner" from "distributed compute platform." Chaining tasks (download → transform → aggregate) makes the system useful for real workflows. High wow-factor. | Medium |
+| 5 | **Adaptive chunk sizing** | Benchmark workers, give bigger chunks to faster ones. Makes split/join jobs visibly faster and demonstrates smart scheduling beyond round-robin. | Medium |
+| 6 | **Work stealing** | Fast workers grab leftover work from slow ones. Natural complement to adaptive chunking — together they make genuinely competitive scheduling. | Medium |
+
+### Tier 3 — Polish / Nice-to-Have
+
+| # | Feature | Why | Effort |
+|---|---|---|---|
+| 7 | **Attestation-based credits** | Moves reputation from self-reported honor system to something verifiable. Important for the "trustless compute" narrative. | Medium |
+| 8 | **Progress tracking per chunk** | UX feature showing which chunks are pending/running/done in real-time. | Low |
+| 9 | **Config file** | Quality of life — `peercompute.json` for idle timeout, store path, bootstrap, etc. | Low |
+| 10 | **Rate limiting** | Prevent spam. Only matters at scale. | Low |
+
+### Skip for Now
+
+- **Encryption** — High effort, low demo value
+- **WASM sandbox** — High effort; JS AsyncFunction approach already works
+- **Token/blockchain settlement** — Out of scope; attestation layer alone tells the story

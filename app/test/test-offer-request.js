@@ -3,7 +3,7 @@ import Corestore from 'corestore'
 import Autobase from 'autobase'
 import crypto from 'crypto'
 import fs from 'fs'
-import { executeTask } from './worker.js'
+import { executeTask } from '../worker.js'
 
 fs.rmSync('./store-requester', { recursive: true, force: true })
 fs.rmSync('./store-worker', { recursive: true, force: true })

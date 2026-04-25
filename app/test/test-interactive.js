@@ -41,21 +41,21 @@ function extractLine (output, prefix) {
 try {
   // ── 1. Start DHT bootstrap ──
   console.log('\n========== Starting DHT bootstrap ==========\n')
-  const boot = spawnNode('boot.js')
+  const boot = spawnNode('../boot.js')
   await waitFor(boot, 'port')
   const bootPort = boot.getOutput().match(/port (\d+)/)?.[1]
   console.log(`\n→ Bootstrap port: ${bootPort}\n`)
 
   // ── 2. Start Peer A ──
   console.log('========== Starting Peer A ==========\n')
-  const peerA = spawnNode('peer-a.js', [], { BOOTSTRAP: `localhost:${bootPort}` })
+  const peerA = spawnNode('../demos/peer-a.js', [], { BOOTSTRAP: `localhost:${bootPort}` })
   await waitFor(peerA, 'Autobase key:')
   const autobaseKey = extractLine(peerA.getOutput(), 'Autobase key:')
   console.log(`\n→ Autobase key: ${autobaseKey?.slice(0, 16)}...\n`)
 
   // ── 3. Start Peer B ──
   console.log('========== Starting Peer B ==========\n')
-  const peerB = spawnNode('peer-b.js', [autobaseKey], { BOOTSTRAP: `localhost:${bootPort}` })
+  const peerB = spawnNode('../demos/peer-b.js', [autobaseKey], { BOOTSTRAP: `localhost:${bootPort}` })
   await waitFor(peerB, 'Writer key:')
   const writerKey = extractLine(peerB.getOutput(), 'Writer key:')
   console.log(`\n→ Writer key: ${writerKey?.slice(0, 16)}...\n`)
@@ -68,7 +68,7 @@ try {
   } catch {
     console.log('\n→ Peers did NOT connect via Hyperswarm (known local limitation)')
     console.log('→ The separate-process Hyperswarm test failed as expected on localhost.\n')
-    console.log('→ This works on separate machines. For local testing, use: node demo-generic.js\n')
+    console.log('→ This works on separate machines. For local testing, use: node demos/demo-generic.js\n')
     boot.kill(); peerA.kill(); peerB.kill()
     await wait(1000)
     process.exit(1)

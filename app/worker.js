@@ -3,7 +3,7 @@
 
 import { spawn } from 'child_process'
 
-export function executeShellTask (task) {
+export function executeShellTask (task, onEmit) {
   const { cmd, timeout = 60000 } = task
 
   if (!cmd) throw new Error('Shell task has no cmd field')
@@ -23,8 +23,16 @@ export function executeShellTask (task) {
       proc.kill('SIGKILL')
     }, timeout)
 
-    proc.stdout.on('data', (d) => { stdout += d.toString() })
-    proc.stderr.on('data', (d) => { stderr += d.toString() })
+    proc.stdout.on('data', (d) => {
+      const chunk = d.toString()
+      stdout += chunk
+      if (onEmit) onEmit({ data: chunk, channel: 'stdout' })
+    })
+    proc.stderr.on('data', (d) => {
+      const chunk = d.toString()
+      stderr += chunk
+      if (onEmit) onEmit({ data: chunk, channel: 'stderr' })
+    })
 
     proc.on('close', (exitCode) => {
       clearTimeout(timer)
@@ -42,9 +50,9 @@ export function executeShellTask (task) {
   })
 }
 
-export async function executeTask (task, inputDrive, outputDrive) {
+export async function executeTask (task, inputDrive, outputDrive, onEmit) {
   if (task.taskType === 'shell') {
-    return executeShellTask(task)
+    return executeShellTask(task, onEmit)
   }
   const { code, args = [] } = task
 
@@ -82,6 +90,12 @@ export async function executeTask (task, inputDrive, outputDrive) {
     }
     argNames.push('writeFile')
     args.push(helpers.writeFile)
+  }
+
+  if (onEmit) {
+    helpers.emit = (data) => { onEmit({ data, channel: null }) }
+    argNames.push('emit')
+    args.push(helpers.emit)
   }
 
   const fn = new (Object.getPrototypeOf(async function () {}).constructor)(...argNames, code)

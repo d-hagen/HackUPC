@@ -3,7 +3,7 @@ import Corestore from 'corestore'
 import Autobase from 'autobase'
 import Hyperswarm from 'hyperswarm'
 import fs from 'fs'
-import { executeTask } from './worker.js'
+import { executeTask } from '../worker.js'
 
 const BOOTSTRAP = process.env.BOOTSTRAP // optional, uses public DHT if not set
 const AUTOBASE_KEY = process.argv[2]
