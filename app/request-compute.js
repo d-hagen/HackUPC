@@ -113,12 +113,35 @@ console.log('Advertising on network, waiting for workers...\n')
 setInterval(() => broadcast(), 10000)
 
 // Watch for results
+const printedChunks = new Set()
+
 base.on('update', async () => {
   for (let i = 0; i < base.view.length; i++) {
     const entry = await base.view.get(i)
 
     if (entry.type === 'worker-available' && !workers.has(entry.key)) {
       workers.set(entry.key, { id: entry.by, ts: entry.ts })
+    }
+
+    if (entry.type === 'stream-chunk') {
+      const key = `${entry.taskId}:${entry.seq}`
+      if (!printedChunks.has(key)) {
+        printedChunks.add(key)
+        const jobMatch = findJobForTask(entry.taskId)
+        const prefix = jobMatch
+          ? `[job ${jobMatch.jobId.slice(0, 8)}… chunk ${jobMatch.chunkIndex}] `
+          : ''
+        if (entry.channel === 'stdout') {
+          process.stdout.write(prefix + entry.data)
+        } else if (entry.channel === 'stderr') {
+          process.stderr.write(prefix + entry.data)
+        } else {
+          const preview = typeof entry.data === 'string'
+            ? entry.data
+            : JSON.stringify(entry.data)
+          console.log(`  ${prefix}[stream ${entry.taskId.slice(0, 8)}… #${entry.seq}] ${preview.slice(0, 200)}`)
+        }
+      }
     }
 
     if (entry.type === 'result' && !printedResults.has(entry.taskId)) {
@@ -158,19 +181,27 @@ base.on('update', async () => {
           rl.prompt()
         }
       } else {
-        console.log(`\n[<] Result from ${entry.by} (task ${entry.taskId.slice(0, 8)}…)`)
-        if (entry.error) {
-          console.log(`    Error: ${entry.error}`)
-        } else if (entry.output && entry.output.stdout !== undefined) {
-          console.log(`    Exit code: ${entry.output.exitCode}`)
-          if (entry.output.timedOut) console.log(`    [!] Process timed out`)
-          if (entry.output.stdout) console.log(`    stdout: ${entry.output.stdout.slice(0, 400)}`)
-          if (entry.output.stderr) console.log(`    stderr: ${entry.output.stderr.slice(0, 200)}`)
+        if (entry.streamed) {
+          console.log(`\n[<] Task ${entry.taskId.slice(0, 8)}… completed (streamed ${entry.totalChunks} chunks, ${entry.elapsed || '?'}ms)`)
+          if (entry.output !== null && entry.output !== undefined) {
+            const out = JSON.stringify(entry.output, null, 2)
+            console.log(`    Return value: ${out.length > 500 ? out.slice(0, 500) + '…' : out}`)
+          }
         } else {
-          const out = JSON.stringify(entry.output ?? null, null, 2)
-          console.log(out.length > 500 ? `    ${out.slice(0, 500)}…` : `    ${out}`)
+          console.log(`\n[<] Result from ${entry.by} (task ${entry.taskId.slice(0, 8)}…)`)
+          if (entry.error) {
+            console.log(`    Error: ${entry.error}`)
+          } else if (entry.output && entry.output.stdout !== undefined) {
+            console.log(`    Exit code: ${entry.output.exitCode}`)
+            if (entry.output.timedOut) console.log(`    [!] Process timed out`)
+            if (entry.output.stdout) console.log(`    stdout: ${entry.output.stdout.slice(0, 400)}`)
+            if (entry.output.stderr) console.log(`    stderr: ${entry.output.stderr.slice(0, 200)}`)
+          } else {
+            const out = JSON.stringify(entry.output ?? null, null, 2)
+            console.log(out.length > 500 ? `    ${out.slice(0, 500)}…` : `    ${out}`)
+          }
         }
-        if (entry.elapsed) console.log(`    (${entry.elapsed}ms)`)
+        if (entry.elapsed && !entry.streamed) console.log(`    (${entry.elapsed}ms)`)
         pendingTaskCount = Math.max(0, pendingTaskCount - 1)
         broadcast()
         rl.prompt()
@@ -188,7 +219,8 @@ Commands:
   run <code>           Send JS code to execute
                          run return 2 + 2
                          run return Array.from({length:10}, (_,i) => i*i)
-                         Tasks with files get: readFile(path), listFiles(), writeFile(path, data)
+                         Tasks get: readFile(path), listFiles(), writeFile(path, data), emit(data)
+                         Use emit(data) to stream intermediate results back in real-time
   file <path.js>       Send a .js file as a single task
   bundle <path.js> [arg1 arg2 ...]
                        Bundle a task file + its npm deps into one string, send to worker

@@ -14,6 +14,33 @@ const storePath = `./store-${workerId}`
 const IDLE_TIMEOUT = 15000 // leave after 15s with no tasks
 const ALLOW_SHELL = process.env.ALLOW_SHELL === '1' || process.env.ALLOW_SHELL === 'true'
 
+function createStreamEmitter (base, taskId, workerId) {
+  let queue = Promise.resolve()
+  let seq = 0
+
+  function onEmit ({ data, channel }) {
+    const chunkSeq = seq++
+    queue = queue.then(() =>
+      base.append({
+        type: 'stream-chunk',
+        taskId,
+        seq: chunkSeq,
+        data,
+        channel,
+        by: workerId,
+        ts: Date.now()
+      })
+    ).catch(err => {
+      console.log(`[!] Stream chunk append failed: ${err.message}`)
+    })
+  }
+
+  async function flush () { await queue }
+  function getSeq () { return seq }
+
+  return { onEmit, flush, getSeq }
+}
+
 console.log('╔═══════════════════════════════════════════╗')
 console.log('║         OFFER COMPUTE — Worker            ║')
 console.log('╠═══════════════════════════════════════════╣')
@@ -243,7 +270,9 @@ async function processTasks () {
 
       const t0 = performance.now()
       try {
-        const output = await executeTask(entry, inputDrive, outputDrive)
+        const emitter = createStreamEmitter(base, entry.id, workerId)
+        const output = await executeTask(entry, inputDrive, outputDrive, emitter.onEmit)
+        await emitter.flush()
         const elapsed = (performance.now() - t0).toFixed(2)
 
         // Check if output files were written
@@ -254,11 +283,13 @@ async function processTasks () {
           }
         }
 
+        const totalChunks = emitter.getSeq()
         await base.append({
           type: 'result', taskId: entry.id, output,
           elapsed: Number(elapsed), by: workerId, ts: Date.now(),
           driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
-          outputFiles: outputFiles.length > 0 ? outputFiles : undefined
+          outputFiles: outputFiles.length > 0 ? outputFiles : undefined,
+          ...(totalChunks > 0 ? { streamed: true, totalChunks } : {})
         })
         tasksDone++
         totalTasksDone++
