@@ -1,8 +1,8 @@
 // Monte Carlo Pi estimation — CPU-heavy job that takes ~4 minutes total
-// Each chunk runs ~4 min / n workers, emitting progress every ~60 seconds
+// Compute is async and yields periodically so replication + streaming work
 // Usage: job jobs/pi-stress-job.js
 
-export const data = { totalSamples: 800_000_000 }
+export const data = { totalSamples: 10_000_000_000 }
 
 export function split (data, n) {
   const perWorker = Math.ceil(data.totalSamples / n)
@@ -13,11 +13,11 @@ export function split (data, n) {
   return chunks
 }
 
-export function compute (chunk) {
+export async function compute (chunk) {
   const { samples, chunkIndex } = chunk
   let inside = 0
-  const batchSize = 1_000_000
-  const emitEvery = 60_000 // 60s in ms
+  const batchSize = 10_000_000
+  const emitEvery = 60_000 // emit progress every 60s
   let lastEmit = Date.now()
 
   for (let done = 0; done < samples; done += batchSize) {
@@ -27,6 +27,9 @@ export function compute (chunk) {
       const y = Math.random()
       if (x * x + y * y <= 1) inside++
     }
+
+    // Yield to event loop — allows replication and stream-chunk appends to process
+    await new Promise(r => setTimeout(r, 0))
 
     const now = Date.now()
     if (now - lastEmit >= emitEvery) {
