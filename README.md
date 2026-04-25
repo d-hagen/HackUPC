@@ -53,8 +53,9 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 | **Requester CLI** | `request-compute.js` | Done — hosts Autobase, advertises on network, assigns tasks, collects results |
 | **Worker CLI** | `offer-compute.js` | Done — discovers requesters, joins, executes tasks, roams when idle |
 | **Generic task executor** | `worker.js` | Done — runs arbitrary JS function bodies via `AsyncFunction` |
-| **Shared Autobase setup** | `base-setup.js` | Done — creates Autobase + Hyperswarm, handles local/public DHT |
+| **Shared Autobase setup** | `base-setup.js` | Done — creates Autobase + Hyperswarm + Hyperdrive, handles local/public DHT |
 | **Reputation system** | `reputation.js` | Done — local ledger (donated/consumed), score broadcast in advertisements |
+| **File transfer (Hyperdrive)** | `base-setup.js` + `worker.js` | Done — upload/download files between peers, task code gets `readFile()`/`writeFile()` |
 
 ### Task Distribution
 | Feature | Status |
@@ -89,6 +90,7 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 | `test-full.js` | Matrix + Mandelbrot via `replicateAndSync` |
 | `test-jobs.js` | Split/join with 2 workers, all 3 job types |
 | `test-marketplace.js` | 2 requesters + 2 workers, isolation verification |
+| `test-hyperdrive.js` | File upload/download between requester and worker via Hyperdrive |
 
 ---
 
@@ -96,13 +98,13 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 
 ### 1. Real Large-Scale Computing Tasks
 
-**Current limitation:** Tasks must be pure JS function bodies with JSON-serializable I/O. No imports, no files, no GPU, no binary data.
+**Current limitation:** Tasks must be pure JS function bodies. No imports, no GPU, no subprocess execution.
 
 | Feature | What | Why | Effort |
 |---|---|---|---|
 | **Subprocess execution** | Workers run shell commands (`python script.py`, `blender -b`, `ffmpeg`) via `child_process` | Unlocks any language/tool, not just JS | Medium |
-| **File transfer via Hyperdrive** | Send/receive files (datasets, images, models) alongside tasks | JSON can't carry GBs of data | Medium |
-| **Binary data support** | `Buffer`/`ArrayBuffer` encoding (base64 or Hypercore blocks) | Images, audio, model weights | Low |
+| ~~**File transfer via Hyperdrive**~~ | ~~Send/receive files (datasets, images, models) alongside tasks~~ | ~~JSON can't carry GBs of data~~ | **Done** |
+| ~~**Binary data support**~~ | ~~`Buffer`/`ArrayBuffer` via Hyperdrive~~ | ~~Images, audio, model weights~~ | **Done** |
 | **npm/module support** | Bundle dependencies with task code, or pre-install on workers | Real code needs libraries | Medium |
 | **Task timeout + kill** | Wrap execution in child process, kill after N seconds | Infinite loops block workers forever | Low |
 | **Worker thread pool** | `worker_threads` for parallel task execution per worker | One task at a time wastes multi-core CPUs | Medium |
@@ -111,7 +113,7 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 | **Streaming results** | Partial/progress updates during long tasks | Users need feedback on 10-min renders | Low |
 | **Task dependencies** | DAG of tasks: B runs only after A completes | Multi-stage pipelines (preprocess → train → evaluate) | Medium |
 
-**Priority for demo:** Subprocess execution + file transfer would unlock rendering and ML inference immediately.
+**Priority for demo:** Subprocess execution would unlock rendering and ML inference. File transfer is done via Hyperdrive — requester uploads files, worker reads them via `readFile()`, writes outputs via `writeFile()`, requester downloads results.
 
 ### 2. UI & App
 
