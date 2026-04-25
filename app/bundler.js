@@ -65,14 +65,13 @@ function wrapBundle (bundledSource, argNames) {
   const argsForward = argNames.join(', ')
   return `
 // --- bundled task (esbuild CJS output) ---
+const { createRequire: __cr } = await import('module');
+const __require = __cr('file:///task.js');
 const __module = { exports: {} };
 const __exports = __module.exports;
 (function(module, exports, require) {
 ${bundledSource}
-})(__module, __exports, function(id) {
-  // minimal require shim: built-ins only — npm deps are already inlined by esbuild
-  throw new Error('Dynamic require("' + id + '") is not supported in bundled tasks. All npm deps must be statically imported so esbuild can inline them.');
-});
+})(__module, __exports, __require);
 const __fn = __module.exports.default || __module.exports;
 if (typeof __fn !== 'function') throw new Error('Bundled task must have a default export that is a function');
 return await __fn(${argsForward});
