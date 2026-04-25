@@ -254,10 +254,10 @@ Commands:
                          Tasks get: readFile(path), listFiles(), writeFile(path, data), emit(data)
                          Use emit(data) to stream intermediate results back in real-time
   file <path.js>       Send a .js file as a single task
-  bundle <path.js> [arg1 arg2 ...]
+  bundle <path.js> [argNames...] [-- values...]
                        Bundle a task file + its npm deps into one string, send to worker
                          Task file must: export default function (args...) { ... }
-                         Example: bundle tasks/resize.js inputPath outputPath
+                         Example: bundle tasks/slugify-text.js text -- "Hello World"
   job <path.js> [n]    Run a distributed job (split across n workers, default=all)
                          Job file exports: data, split(data,n), compute(chunk), join(results)
                          Optionally exports: requires (e.g. { hasGPU: true })
@@ -387,9 +387,20 @@ rl.on('line', async (line) => {
     }
 
   } else if (input.startsWith('bundle ')) {
-    const parts = input.slice(7).trim().split(/\s+/)
+    const raw = input.slice(7).trim()
+    const sepIdx = raw.indexOf(' -- ')
+    let beforeSep, afterSep
+    if (sepIdx !== -1) {
+      beforeSep = raw.slice(0, sepIdx).trim()
+      afterSep = raw.slice(sepIdx + 4).trim()
+    } else {
+      beforeSep = raw
+      afterSep = ''
+    }
+    const parts = beforeSep.split(/\s+/)
     const filePath = parts[0]
     const argNames = parts.slice(1)
+    const args = afterSep ? afterSep.match(/"[^"]*"|'[^']*'|\S+/g).map(s => s.replace(/^["']|["']$/g, '')) : []
     try {
       const absPath = resolve(filePath)
       console.log(`[~] Bundling ${filePath} with esbuild…`)
@@ -399,7 +410,7 @@ rl.on('line', async (line) => {
       }
       const id = crypto.randomUUID()
       await base.append({
-        type: 'task', id, code, argNames, args: [],
+        type: 'task', id, code, argNames, args,
         bundled: true,
         driveKey, by: requesterId, ts: Date.now()
       })
