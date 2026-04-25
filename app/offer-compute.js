@@ -8,6 +8,7 @@ import Hyperdrive from 'hyperdrive'
 import { NETWORK_TOPIC } from './base-setup.js'
 import { executeTask } from './worker.js'
 import { addDonated, loadReputation, getScore } from './reputation.js'
+import { detectCapabilities, meetsRequirements } from './capabilities.js'
 
 const workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
 const storePath = `./store-${workerId}`
@@ -21,13 +22,29 @@ console.log(`║  Worker ID: ${workerId}                ║`)
 console.log('╚═══════════════════════════════════════════╝')
 console.log('')
 console.log(`Idle timeout: ${IDLE_TIMEOUT / 1000}s | Store: ${storePath}`)
-console.log(`Shell execution: ${ALLOW_SHELL ? 'ENABLED' : 'DISABLED (set ALLOW_SHELL=1 to enable)'}\n`)
+console.log(`Shell execution: ${ALLOW_SHELL ? 'ENABLED' : 'DISABLED (set ALLOW_SHELL=1 to enable)'}`)
+console.log('Detecting capabilities...')
+
+const myCapabilities = await detectCapabilities()
+console.log(`Platform: ${myCapabilities.platform}/${myCapabilities.arch} | CPU: ${myCapabilities.cpuCores} cores | RAM: ${myCapabilities.ramGB}GB`)
+console.log(`GPU: ${myCapabilities.gpuName} (${myCapabilities.gpuType}) | Python: ${myCapabilities.hasPython ? myCapabilities.pythonVersion : 'no'} | PyTorch: ${myCapabilities.hasPyTorch ? myCapabilities.pytorchVersion : 'no'}`)
+console.log()
 
 const BOOTSTRAP = process.env.BOOTSTRAP
 const swarmOpts = BOOTSTRAP
   ? { bootstrap: [{ host: BOOTSTRAP.split(':')[0], port: Number(BOOTSTRAP.split(':')[1]) }] }
   : {}
-const swarm = new Hyperswarm(swarmOpts)
+
+// --- Two swarms: discovery (JSON signaling) and replication (Autobase sync) ---
+// They MUST be separate because raw JSON writes and Protomux-based Autobase
+// replication corrupt each other when sharing a connection.
+
+const discoverySwarm = new Hyperswarm(swarmOpts)
+const replicationSwarm = new Hyperswarm(swarmOpts)
+
+replicationSwarm.on('connection', (conn) => {
+  if (store) store.replicate(conn)
+})
 
 function open (s) { return s.get('view', { valueEncoding: 'json' }) }
 async function apply (nodes, view, b) {
@@ -53,6 +70,7 @@ let outputDrive = null // worker's own drive for output files
 let idleTimer = null
 let taskPollTimer = null
 let searching = true
+let joining = false // guard against concurrent joinRequester calls
 
 function resetIdleTimer () {
   if (idleTimer) clearTimeout(idleTimer)
@@ -70,9 +88,9 @@ async function leaveCurrentRequester () {
 
   const leavingId = currentRequester
 
-  // Leave old autobase discovery topic
+  // Leave Autobase replication topic on the replication swarm
   if (currentDiscoveryKey) {
-    swarm.leave(currentDiscoveryKey)
+    replicationSwarm.leave(currentDiscoveryKey)
     currentDiscoveryKey = null
   }
 
@@ -97,8 +115,9 @@ async function leaveCurrentRequester () {
 }
 
 async function joinRequester (requesterId, autobaseKey, conn) {
-  if (!searching) return
+  if (!searching || joining) return
   searching = false
+  joining = true
   currentRequester = requesterId
 
   console.log(`[~] Joining ${requesterId}…`)
@@ -118,14 +137,16 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   await outputDrive.ready()
   mountedDrives.clear()
 
-  // Request to join
+  // Request to join on discovery connection — include capabilities so requester can route tasks
   conn.write(JSON.stringify({
-    type: 'join-request', role: 'worker', writerKey, workerId
+    type: 'join-request', role: 'worker', writerKey, workerId,
+    capabilities: myCapabilities
   }))
 
-  // Replicate (Corestore replicates all cores including drives)
-  base.replicate(conn)
-  swarm.join(base.discoveryKey, { client: true, server: true })
+  // Join the Autobase topic on the REPLICATION swarm (separate from discovery)
+  // This creates a fresh connection to the requester, used only for binary
+  // Autobase/Corestore protocol — no JSON interference.
+  replicationSwarm.join(base.discoveryKey, { client: true, server: true })
 
   // Watch for tasks on new updates
   base.on('update', async () => {
@@ -134,21 +155,19 @@ async function joinRequester (requesterId, autobaseKey, conn) {
     }
   })
 
-  // Poll every 2s to catch tasks already in the log before we joined.
-  // The 'update' event alone misses these because base.writable isn't true
-  // at the moment the initial sync fires the event.
+  // Poll every 2s to catch tasks already in the log before we joined
   if (taskPollTimer) clearInterval(taskPollTimer)
   taskPollTimer = setInterval(async () => {
     if (!base || searching) { clearInterval(taskPollTimer); taskPollTimer = null; return }
     try {
       await base.update()
       if (base.writable) {
-        console.log(`[…] Poll: view=${base.view.length}, writable=${base.writable}`)
         await processTasks()
       }
     } catch {}
   }, 2000)
 
+  joining = false
   resetIdleTimer()
   console.log(`[~] Connected to ${requesterId}, waiting for authorization...\n`)
 }
@@ -167,6 +186,7 @@ async function processTasks () {
       if (!entry.code) continue
     }
     if (entry.assignedTo && entry.assignedTo !== workerId) continue
+    if (!meetsRequirements(entry.requires, myCapabilities)) continue
 
     // Check if result exists
     let hasResult = false
@@ -194,6 +214,12 @@ async function processTasks () {
         mountedDrives.set(entry.driveKey, d)
       }
       inputDrive = mountedDrives.get(entry.driveKey)
+      // Wait for drive data to sync from requester (Autobase replicates faster than Hyperdrive)
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await inputDrive.update()
+        if (inputDrive.version > 0) break
+        await new Promise(r => setTimeout(r, 500))
+      }
     }
 
     const t0 = performance.now()
@@ -223,7 +249,7 @@ async function processTasks () {
         console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
         if (output.timedOut) console.log(`    [!] Process timed out`)
       } else {
-        const preview = JSON.stringify(output).slice(0, 80)
+        const preview = JSON.stringify(output ?? null).slice(0, 80)
         console.log(`[<] Done in ${elapsed}ms | ${preview}`)
       }
       console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
@@ -295,10 +321,10 @@ function pickBestRequester () {
   }
 }
 
-// Join well-known topic to find requesters
-swarm.join(NETWORK_TOPIC, { client: true, server: true })
+// Join well-known topic on DISCOVERY swarm only (JSON signaling, no replication)
+discoverySwarm.join(NETWORK_TOPIC, { client: true, server: true })
 
-swarm.on('connection', (conn) => {
+discoverySwarm.on('connection', (conn) => {
   conn.on('data', async (data) => {
     try {
       const msg = JSON.parse(data.toString())
@@ -332,13 +358,10 @@ swarm.on('connection', (conn) => {
     } catch {}
   })
 
-  // If we already have a base, replicate on new connections
-  if (base) {
-    base.replicate(conn)
-  }
+  // NO replication on discovery connections
 })
 
-await swarm.flush()
+discoverySwarm.flush().then(() => console.log('DHT bootstrap complete.'))
 console.log('Listening for requesters on network...\n')
 
 // Periodically check for requesters if searching
@@ -350,7 +373,9 @@ process.on('SIGINT', async () => {
   const rep = loadReputation()
   console.log(`\nShutting down… (${totalTasksDone} tasks completed, reputation: score=${getScore(rep)})`)
   if (idleTimer) clearTimeout(idleTimer)
-  await swarm.destroy()
+  if (taskPollTimer) clearInterval(taskPollTimer)
+  await discoverySwarm.destroy()
+  await replicationSwarm.destroy()
   if (base) try { await base.close() } catch {}
   fs.rmSync(storePath, { recursive: true, force: true })
   process.exit()
