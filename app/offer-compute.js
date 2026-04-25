@@ -319,6 +319,12 @@ async function processTasks () {
   }
 }
 
+function canHelpRequester (info) {
+  const reqs = info.pendingRequires || []
+  if (reqs.length === 0) return true
+  return reqs.some(req => meetsRequirements(req, myCapabilities))
+}
+
 function pickBestRequester () {
   if (!searching) return
 
@@ -328,6 +334,7 @@ function pickBestRequester () {
     if (Date.now() - info.ts > 30000) continue // skip stale
     if (info.pendingTasks <= 0) continue // skip idle
     if (info.conn.destroyed) continue // skip dead connections
+    if (!canHelpRequester(info)) continue // skip: no pending tasks this worker can run
     const score = info.reputation?.score ?? 0
     candidates.push({ id, info, score })
   }
@@ -363,15 +370,10 @@ discoverySwarm.on('connection', (conn) => {
 
       if (msg.type === 'advertise' && msg.role === 'requester') {
         const repScore = msg.reputation?.score ?? 0
-        // Check if this worker can run any of the advertised pending tasks
-        // pendingRequires is an array of requires objects (null = any worker)
-        const pendingRequires = msg.pendingRequires || []
-        const canHelp = pendingRequires.length === 0 ||
-          pendingRequires.some(req => meetsRequirements(req, myCapabilities))
-
         availableRequesters.set(msg.requesterId, {
           autobaseKey: msg.autobaseKey,
           pendingTasks: msg.pendingTasks || 0,
+          pendingRequires: msg.pendingRequires || [],
           workerCount: msg.workerCount || 0,
           reputation: msg.reputation || { donated: 0, consumed: 0, score: 0 },
           conn,
@@ -381,12 +383,8 @@ discoverySwarm.on('connection', (conn) => {
         if (searching) {
           if (msg.pendingTasks > 0) {
             const scoreStr = repScore !== 0 ? `, reputation: ${repScore}` : ''
-            if (canHelp) {
-              console.log(`[~] Found ${msg.requesterId} (${msg.pendingTasks} pending tasks${scoreStr})`)
-              pickBestRequester()
-            } else {
-              console.log(`[~] Found ${msg.requesterId} but tasks require capabilities this worker lacks — skipping`)
-            }
+            console.log(`[~] Found ${msg.requesterId} (${msg.pendingTasks} pending tasks${scoreStr})`)
+            pickBestRequester()
           } else {
             console.log(`[~] Found ${msg.requesterId} (no pending tasks, staying available)`)
           }

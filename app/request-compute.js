@@ -404,20 +404,20 @@ rl.on('line', async (line) => {
     if (workers.size === 0) {
       console.log('[!] No workers yet. Task queued — will run when a shell-enabled worker joins.')
     }
-    const assignedTo = pickWorkerForTask(requires, workers)
+    const shellRequires = { allowsShell: true, ...requires }
+    const assignedTo = pickWorkerForTask(shellRequires, workers)
     const id = crypto.randomUUID()
     await base.append({
       type: 'task', id, taskType: 'shell', cmd: cmdStr, timeout,
-      requires: requires || undefined,
+      requires: shellRequires,
       assignedTo: assignedTo || undefined,
       by: requesterId, ts: Date.now()
     })
     pendingTaskCount++
-    pendingTaskRequires.set(id, requires || null)
+    pendingTaskRequires.set(id, shellRequires)
     addConsumed(1)
     broadcast()
-    if (requires) console.log(`[>] Shell task ${id.slice(0, 8)}… posted: ${cmdStr.slice(0, 60)} (requires: ${JSON.stringify(requires)}, assigned: ${assignedTo || 'any'})`)
-    else console.log(`[>] Shell task ${id.slice(0, 8)}… posted: ${cmdStr.slice(0, 60)}`)
+    console.log(`[>] Shell task ${id.slice(0, 8)}… posted: ${cmdStr.slice(0, 60)} (requires: ${JSON.stringify(shellRequires)}, assigned: ${assignedTo || 'any'})`)
 
   } else if (input === 'workers') {
     if (workers.size === 0) {
