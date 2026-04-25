@@ -14,7 +14,7 @@ function open (store) { return store.get('view', { valueEncoding: 'json' }) }
 async function apply (nodes, view, base) {
   for (const node of nodes) {
     if (node.value.type === 'add-writer') {
-      await base.addWriter(Buffer.from(node.value.key, 'hex'), { indexer: true })
+      await base.addWriter(Buffer.from(node.value.key, 'hex'), { indexer: false })
     }
     await view.append(node.value)
   }
