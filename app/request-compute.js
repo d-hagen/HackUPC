@@ -32,6 +32,7 @@ console.log("");
 const printedResults = new Set();
 const recentResults = [];
 const workers = new Map(); // writerKey -> { id, ts }
+const pendingJoinRequests = new Map(); // workerId -> { writerKey, conn, ts }
 const pendingJobs = new Map();
 const taskToJob = new Map();
 let pendingTaskCount = 0;
@@ -80,11 +81,20 @@ function snapshotDashboard() {
     results: job.results,
   }));
 
+  const pendingWorkerRows = [...pendingJoinRequests.entries()].map(
+    ([id, info]) => ({
+      id,
+      ts: info.ts,
+      ageSeconds: Math.floor((Date.now() - info.ts) / 1000),
+    }),
+  );
+
   return {
     requesterId,
     autobaseEntries: base.view.length,
     reputation: rep,
     workers: workerRows,
+    pendingJoinRequests: pendingWorkerRows,
     jobs,
     pendingTaskCount,
     results: recentResults,
@@ -110,6 +120,11 @@ function serializeSnapshot(state) {
       banned: worker.banned,
       prioritized: worker.prioritized,
       completedTasks: worker.completedTasks,
+    })),
+    pendingJoinRequests: state.pendingJoinRequests.map((w) => ({
+      id: w.id,
+      ageSeconds: w.ageSeconds,
+      lastSeenTs: w.ts,
     })),
     jobs: state.jobs.map((job) => ({
       jobId: job.jobId,
@@ -296,22 +311,16 @@ discoverySwarm.on("connection", (conn) => {
 
       if (msg.type === "join-request" && msg.role === "worker") {
         const writerKey = msg.writerKey;
-        if (!workers.has(writerKey)) {
-          workers.set(writerKey, {
-            id: msg.workerId,
-            ts: Date.now(),
-            banned: false,
-            prioritized: false,
-            completedTasks: 0,
-          });
-          await base.append({
-            type: "add-writer",
-            key: writerKey,
-            by: requesterId,
+        if (!workers.has(writerKey) && !pendingJoinRequests.has(msg.workerId)) {
+          pendingJoinRequests.set(msg.workerId, {
+            writerKey,
+            conn,
             ts: Date.now(),
           });
-          console.log(`[+] Worker joined: ${msg.workerId}`);
-          conn.write(JSON.stringify({ type: "join-accepted", autobaseKey }));
+          console.log(
+            `\n[?] Worker ${msg.workerId} wants to join. Use 'accept ${msg.workerId}' or 'reject ${msg.workerId}'.`,
+          );
+          persistSnapshot();
           rl.prompt();
         }
       }
@@ -477,6 +486,8 @@ Commands:
   unban <id>           Unban a worker
   prioritize <id>      Prioritize a worker (assign them more job tasks)
   unprioritize <id>    Remove prioritize status from worker
+  accept <id>          Accept a worker's join request
+  reject <id>          Reject a worker's join request
   help                 Show this help
 `);
 }
@@ -793,6 +804,46 @@ async function executeCommand(input, options = {}) {
     }
     console.log(`[+] Unprioritized ${count} worker(s) matching ${target}`);
     persistSnapshot();
+  } else if (input.startsWith("accept ")) {
+    const target = input.slice(7).trim();
+    const req = pendingJoinRequests.get(target);
+    if (!req) {
+      console.log(`[!] No pending request found for ${target}.`);
+    } else {
+      const { writerKey, conn } = req;
+      workers.set(writerKey, {
+        id: target,
+        ts: Date.now(),
+        banned: false,
+        prioritized: false,
+        completedTasks: 0,
+      });
+      await base.append({
+        type: "add-writer",
+        key: writerKey,
+        by: requesterId,
+        ts: Date.now(),
+      });
+      console.log(`[+] Accepted worker: ${target}`);
+      try {
+        conn.write(JSON.stringify({ type: "join-accepted", autobaseKey }));
+      } catch (err) {}
+      pendingJoinRequests.delete(target);
+      persistSnapshot();
+    }
+  } else if (input.startsWith("reject ")) {
+    const target = input.slice(7).trim();
+    const req = pendingJoinRequests.get(target);
+    if (!req) {
+      console.log(`[!] No pending request found for ${target}.`);
+    } else {
+      console.log(`[-] Rejected worker: ${target}`);
+      try {
+        req.conn.write(JSON.stringify({ type: "join-rejected" }));
+      } catch (err) {}
+      pendingJoinRequests.delete(target);
+      persistSnapshot();
+    }
   } else if (input === "help") {
     showHelp();
   } else {

@@ -136,7 +136,7 @@ async function joinRequester(requesterId, autobaseKey, conn) {
   joining = true;
   currentRequester = requesterId;
 
-  console.log(`[~] Joining ${requesterId}…`);
+  console.log(`[~] Joining ${requesterId} (waiting for approval) ...`);
 
   fs.rmSync(storePath, { recursive: true, force: true });
   store = new Corestore(storePath);
@@ -411,6 +411,9 @@ discoverySwarm.on("connection", (conn) => {
       if (msg.type === "join-accepted") {
         console.log(`[+] Authorized by ${currentRequester}!`);
         resetIdleTimer();
+      } else if (msg.type === "join-rejected") {
+        console.log(`[-] Join request rejected by ${currentRequester}.`);
+        leaveCurrentRequester();
       }
     } catch {}
   });

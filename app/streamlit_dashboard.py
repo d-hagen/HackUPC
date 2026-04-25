@@ -165,6 +165,18 @@ def _render_network(state: dict[str, Any]) -> None:
 
 
 def _render_workers(state: dict[str, Any]) -> None:
+    pending = state.get("pendingJoinRequests", []) if isinstance(state.get("pendingJoinRequests"), list) else []
+    if pending:
+        st.warning(f"🔔 {len(pending)} worker(s) waiting for approval. Use the Manage Workers sidebar to Accept or Reject them.")
+        p_rows = []
+        for p in pending:
+            p_rows.append({
+                "worker_id": str(p.get("id", "unknown"))[:8],
+                "status": "pending",
+                "waiting_seconds": _safe_int(p.get("ageSeconds", 0))
+            })
+        st.dataframe(p_rows, use_container_width=True)
+
     workers = state.get("workers", []) if isinstance(state.get("workers"), list) else []
     st.subheader("Workers & Reputation")
     if not workers:
@@ -303,7 +315,7 @@ def main() -> None:
     with st.sidebar.form("worker_action_form", clear_on_submit=True):
         st.subheader("Manage Workers")
         worker_id_input = st.text_input("Worker ID prefix")
-        action = st.selectbox("Action", ["Ban", "Unban", "Prioritize", "Unprioritize"])
+        action = st.selectbox("Action", ["Ban", "Unban", "Prioritize", "Unprioritize", "Accept", "Reject"])
         submit_action = st.form_submit_button("Apply to Worker")
     if submit_action and worker_id_input:
         cmd_str = f"{action.lower()} {worker_id_input.strip()}"
