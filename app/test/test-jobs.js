@@ -5,7 +5,7 @@ import crypto from 'crypto'
 import fs from 'fs'
 import { pathToFileURL } from 'url'
 import { resolve } from 'path'
-import { executeTask } from './worker.js'
+import { executeTask } from '../worker.js'
 
 fs.rmSync('./store-requester', { recursive: true, force: true })
 fs.rmSync('./store-worker-1', { recursive: true, force: true })

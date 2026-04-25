@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 rm -rf store-a store-b
 
 echo "=== Starting bootstrap DHT ==="
@@ -14,7 +14,7 @@ export BOOTSTRAP="localhost:$BOOT_PORT"
 
 echo ""
 echo "=== Starting Peer A ==="
-BOOTSTRAP=$BOOTSTRAP node peer-a.js > /tmp/peer-a.log 2>&1 &
+BOOTSTRAP=$BOOTSTRAP node demos/peer-a.js > /tmp/peer-a.log 2>&1 &
 PEER_A_PID=$!
 sleep 2
 AUTOBASE_KEY=$(grep "Autobase key:" /tmp/peer-a.log | awk '{print $3}')
@@ -24,7 +24,7 @@ echo "Autobase key: $AUTOBASE_KEY"
 
 echo ""
 echo "=== Starting Peer B ==="
-BOOTSTRAP=$BOOTSTRAP node peer-b.js "$AUTOBASE_KEY" > /tmp/peer-b.log 2>&1 &
+BOOTSTRAP=$BOOTSTRAP node demos/peer-b.js "$AUTOBASE_KEY" > /tmp/peer-b.log 2>&1 &
 PEER_B_PID=$!
 sleep 3
 WRITER_B_KEY=$(grep "Writer key:" /tmp/peer-b.log | awk '{print $3}')

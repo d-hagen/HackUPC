@@ -7,7 +7,7 @@ import Corestore from 'corestore'
 import Autobase from 'autobase'
 import Hyperswarm from 'hyperswarm'
 import crypto from 'crypto'
-import { executeTask } from './worker.js'
+import { executeTask } from '../worker.js'
 
 const DIR = dirname(fileURLToPath(import.meta.url))
 fs.rmSync(join(DIR, 'store-a'), { recursive: true, force: true })

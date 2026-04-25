@@ -26,7 +26,7 @@ import Autobase from 'autobase'
 import Hyperdrive from 'hyperdrive'
 import crypto from 'crypto'
 import fs from 'fs'
-import { executeTask } from './worker.js'
+import { executeTask } from '../worker.js'
 
 // ── Step 0: Clean up old stores ──────────────────────────────────────────────
 for (const d of ['store-pipeline-r', 'store-pipeline-w1', 'store-pipeline-w2']) {

@@ -4,7 +4,7 @@ import Autobase from 'autobase'
 import Hyperdrive from 'hyperdrive'
 import crypto from 'crypto'
 import fs from 'fs'
-import { executeTask } from './worker.js'
+import { executeTask } from '../worker.js'
 
 for (const d of ['store-r', 'store-w']) {
   fs.rmSync(d, { recursive: true, force: true })

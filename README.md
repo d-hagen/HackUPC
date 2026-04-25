@@ -122,14 +122,14 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 |---|---|
 | `test/index.test.js` | 20+ bundling tests — npm dep inlining, execution, error propagation |
 | `test/slugify-bundle.test.js` | 14 slugify-specific tests — special chars, unicode, edge cases |
-| `test-capabilities.js` | 39 capability tests — requirement matching, worker selection, device routing |
-| `test-pipeline.js` | Full E2E pipeline — upload Python script to Hyperdrive, split data, workers run Python, join results |
-| `demo.js` | Self-contained: matrix multiply + Mandelbrot with Hyperswarm fallback |
-| `demo-generic.js` | 6 different generic tasks (arithmetic, fibonacci, matrix, primes, sort, mandelbrot) |
-| `test-full.js` | Matrix + Mandelbrot via `replicateAndSync` |
-| `test-jobs.js` | Split/join with 2 workers, all 3 job types |
-| `test-marketplace.js` | 2 requesters + 2 workers, isolation verification |
-| `test-hyperdrive.js` | File upload/download between requester and worker via Hyperdrive |
+| `test/test-capabilities.js` | 39 capability tests — requirement matching, worker selection, device routing |
+| `test/test-pipeline.js` | Full E2E pipeline — upload Python script to Hyperdrive, split data, workers run Python, join results |
+| `demos/demo.js` | Self-contained: matrix multiply + Mandelbrot with Hyperswarm fallback |
+| `demos/demo-generic.js` | 6 different generic tasks (arithmetic, fibonacci, matrix, primes, sort, mandelbrot) |
+| `test/test-full.js` | Matrix + Mandelbrot via `replicateAndSync` |
+| `test/test-jobs.js` | Split/join with 2 workers, all 3 job types |
+| `test/test-marketplace.js` | 2 requesters + 2 workers, isolation verification |
+| `test/test-hyperdrive.js` | File upload/download between requester and worker via Hyperdrive |
 
 ---
 
@@ -278,22 +278,27 @@ app/
 │   ├── primes-job.js
 │   ├── mandelbrot-job.js
 │   ├── gpu-benchmark-job.js
+│   ├── gpu-benchmark.py   # Standalone GPU benchmark (PyTorch)
 │   ├── stats-task.js
 │   └── stats.py
-├── test/                  # Unit tests (brittle)
+├── test/                  # Tests (brittle + integration)
 │   ├── index.test.js      # Bundling tests
-│   └── slugify-bundle.test.js
-├── test-capabilities.js   # Capability detection tests
-├── test-pipeline.js       # E2E pipeline test (Python + Hyperdrive)
-├── test-jobs.js           # Distributed job tests
-├── test-marketplace.js    # Multi-requester isolation test
-├── test-hyperdrive.js     # File transfer test
-├── test-full.js           # Matrix + Mandelbrot test
-├── gpu-benchmark.py       # Standalone GPU benchmark (PyTorch)
-├── mandelbrot.js          # Mandelbrot compute functions
-├── matrix.js              # Matrix multiply functions
-├── demo.js                # Self-contained demo (single process)
-├── demo-generic.js        # Generic task demo (6 task types)
+│   ├── slugify-bundle.test.js
+│   ├── test-capabilities.js   # Capability detection tests
+│   ├── test-pipeline.js       # E2E pipeline test (Python + Hyperdrive)
+│   ├── test-jobs.js           # Distributed job tests
+│   ├── test-marketplace.js    # Multi-requester isolation test
+│   ├── test-hyperdrive.js     # File transfer test
+│   └── test-full.js           # Matrix + Mandelbrot test
+├── demos/                 # Demo scripts
+│   ├── demo.js            # Self-contained demo (single process)
+│   ├── demo-generic.js    # Generic task demo (6 task types)
+│   ├── peer.js            # Minimal peer example
+│   ├── peer-a.js          # Requester peer
+│   └── peer-b.js          # Worker peer
+├── examples/              # Standalone compute examples
+│   ├── mandelbrot.js      # Mandelbrot compute functions
+│   └── matrix.js          # Matrix multiply functions
 └── package.json
 ```
 

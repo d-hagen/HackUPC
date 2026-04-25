@@ -1,15 +1,32 @@
-// Full end-to-end test using autobase-test-helpers for reliable local sync
+// Self-contained demo: spawns boot, peer-a, peer-b in child processes
+// Shows full P2P matrix multiplication + Mandelbrot rendering
+import { fork } from 'child_process'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
+import fs from 'fs'
+import DHT from '@hyperswarm/dht'
 import Corestore from 'corestore'
 import Autobase from 'autobase'
+import Hyperswarm from 'hyperswarm'
 import crypto from 'crypto'
-import fs from 'fs'
-import { replicateAndSync } from 'autobase-test-helpers'
-import { createRandomMatrix, multiplyMatrices, printMatrix } from './matrix.js'
-import { computeMandelbrot, createTileTasks } from './mandelbrot.js'
+import { createRandomMatrix, multiplyMatrices, printMatrix } from '../examples/matrix.js'
+import { computeMandelbrot, createTileTasks } from '../examples/mandelbrot.js'
 
-fs.rmSync('./store-a', { recursive: true, force: true })
-fs.rmSync('./store-b', { recursive: true, force: true })
+const DIR = dirname(fileURLToPath(import.meta.url))
 
+// Clean up old stores
+fs.rmSync(join(DIR, 'store-a'), { recursive: true, force: true })
+fs.rmSync(join(DIR, 'store-b'), { recursive: true, force: true })
+
+// ── Step 1: Start local DHT bootstrap ──
+console.log('Starting local DHT bootstrap...')
+const dht = new DHT({ bootstrap: [] })
+await dht.ready()
+const bootPort = dht.address().port
+const bootstrap = [{ host: '127.0.0.1', port: bootPort }]
+console.log(`DHT bootstrap on port ${bootPort}\n`)
+
+// ── Step 2: Create Peer A ──
 function open (store) { return store.get('view', { valueEncoding: 'json' }) }
 async function apply (nodes, view, base) {
   for (const node of nodes) {
@@ -20,25 +37,97 @@ async function apply (nodes, view, base) {
   }
 }
 
-const storeA = new Corestore('./store-a')
+const storeA = new Corestore(join(DIR, 'store-a'))
 const baseA = new Autobase(storeA, null, { valueEncoding: 'json', open, apply })
 await baseA.ready()
 
-const storeB = new Corestore('./store-b')
+console.log('═══════════════════════════════════════════')
+console.log('  PEER A online')
+console.log(`  Autobase key: ${baseA.key.toString('hex').slice(0, 16)}...`)
+console.log('═══════════════════════════════════════════\n')
+
+// ── Step 3: Create Peer B (separate Corestore, same process) ──
+const storeB = new Corestore(join(DIR, 'store-b'))
 const baseB = new Autobase(storeB, baseA.key, { valueEncoding: 'json', open, apply })
 await baseB.ready()
 
-// ==== TEST 1: Matrix Multiplication ====
+console.log('═══════════════════════════════════════════')
+console.log('  PEER B online')
+console.log(`  Writer key:   ${baseB.local.key.toString('hex').slice(0, 16)}...`)
+console.log('═══════════════════════════════════════════\n')
+
+// ── Step 4: Join Hyperswarm ──
+const swarmA = new Hyperswarm({ bootstrap })
+const swarmB = new Hyperswarm({ bootstrap })
+
+let connectedA = false, connectedB = false
+
+swarmA.on('connection', (conn) => {
+  if (!connectedA) { console.log('[A] peer connected!'); connectedA = true }
+  baseA.replicate(conn)
+})
+swarmB.on('connection', (conn) => {
+  if (!connectedB) { console.log('[B] peer connected!'); connectedB = true }
+  baseB.replicate(conn)
+})
+
+// Both join + announce on the same topic
+swarmA.join(baseA.discoveryKey, { client: true, server: true })
+swarmB.join(baseA.discoveryKey, { client: true, server: true })
+
+console.log('Joining swarm...')
+await Promise.all([swarmA.flush(), swarmB.flush()])
+
+// Wait for connections
+const waitForConnection = () => new Promise((resolve) => {
+  if (connectedA && connectedB) return resolve()
+  const check = setInterval(() => {
+    if (connectedA && connectedB) { clearInterval(check); resolve() }
+  }, 100)
+  // Timeout after 10s
+  setTimeout(() => { clearInterval(check); resolve() }, 10000)
+})
+await waitForConnection()
+
+if (!connectedA || !connectedB) {
+  console.log('\nHyperswarm connection timed out. Falling back to direct replication...\n')
+  // Direct pipe replication as fallback
+  const s1 = storeA.replicate(true)
+  const s2 = storeB.replicate(false)
+  s1.pipe(s2).pipe(s1)
+  await new Promise(r => setTimeout(r, 500))
+} else {
+  console.log('Both peers connected via Hyperswarm!\n')
+}
+
+// Helper: force sync between the two bases
+async function sync () {
+  // Trigger update on both
+  await baseA.update()
+  await baseB.update()
+  await new Promise(r => setTimeout(r, 300))
+  await baseA.update()
+  await baseB.update()
+}
+
+// ── Step 5: A authorizes B as writer ──
+console.log('[A] Adding Peer B as writer...')
+await baseA.append({
+  type: 'add-writer',
+  key: baseB.local.key.toString('hex'),
+  by: 'peer-A',
+  ts: Date.now()
+})
+await sync()
+console.log('[A] Peer B authorized ✓\n')
+
+// ══════════════════════════════════════════
+//   TEST 1: Matrix Multiplication
+// ══════════════════════════════════════════
 console.log('═══════════════════════════════════════════')
 console.log('  TEST 1: P2P Matrix Multiplication')
 console.log('═══════════════════════════════════════════\n')
 
-// A adds B as writer
-await baseA.append({ type: 'add-writer', key: baseB.local.key.toString('hex'), by: 'peer-A', ts: Date.now() })
-await replicateAndSync([baseA, baseB])
-console.log('[A] added B as writer ✓')
-
-// A posts matrix task
 const matA = createRandomMatrix(4)
 const matB = createRandomMatrix(4)
 printMatrix(matA, '[A] Matrix A')
@@ -55,15 +144,14 @@ await baseA.append({
 })
 console.log('[A] task posted\n')
 
-// Sync to B
-await replicateAndSync([baseA, baseB])
+await sync()
 console.log(`[B] synced, view has ${baseB.view.length} entries`)
 
 // B finds and computes task
 for (let i = 0; i < baseB.view.length; i++) {
   const entry = await baseB.view.get(i)
   if (entry.type === 'task' && entry.action === 'matrix-multiply') {
-    console.log(`[B] found task, computing...`)
+    console.log('[B] found task, computing...')
     const t0 = performance.now()
     const result = multiplyMatrices(entry.params.a, entry.params.b)
     const elapsed = (performance.now() - t0).toFixed(2)
@@ -81,18 +169,19 @@ for (let i = 0; i < baseB.view.length; i++) {
   }
 }
 
-// Sync result back to A
-await replicateAndSync([baseA, baseB])
+await sync()
 
 for (let i = 0; i < baseA.view.length; i++) {
   const entry = await baseA.view.get(i)
-  if (entry.type === 'result') {
+  if (entry.type === 'result' && entry.action === 'matrix-multiply') {
     console.log(`[A] ★ RECEIVED RESULT from ${entry.by} ★`)
     printMatrix(entry.output, '[A] A×B')
   }
 }
 
-// ==== TEST 2: Mandelbrot Tiles ====
+// ══════════════════════════════════════════
+//   TEST 2: Mandelbrot Tiles
+// ══════════════════════════════════════════
 console.log('\n═══════════════════════════════════════════')
 console.log('  TEST 2: P2P Mandelbrot Rendering')
 console.log('═══════════════════════════════════════════\n')
@@ -115,7 +204,7 @@ for (const params of tiles) {
   })
 }
 
-await replicateAndSync([baseA, baseB])
+await sync()
 console.log(`[B] synced, ${baseB.view.length} entries`)
 
 // B computes all mandelbrot tiles
@@ -139,8 +228,7 @@ for (let i = 0; i < baseB.view.length; i++) {
 }
 console.log(`[B] computed ${tileCount} tiles in ${(performance.now() - t0).toFixed(1)}ms`)
 
-// Sync results back
-await replicateAndSync([baseA, baseB])
+await sync()
 
 // A assembles the image
 const results = []
@@ -172,12 +260,17 @@ for (let y = 0; y < IMAGE_SIZE; y += 2) {
   console.log(row)
 }
 
-// Summary
+// ── Summary ──
 console.log(`\n═══════════════════════════════════════════`)
 console.log(`  Total entries in autobase: ${baseA.view.length}`)
 console.log(`  Tasks posted by peer-A:    ${tiles.length + 1}`)
 console.log(`  Results from peer-B:       ${results.length + 1}`)
 console.log(`═══════════════════════════════════════════`)
 
+// ── Cleanup ──
+await swarmA.destroy()
+await swarmB.destroy()
 await baseA.close()
 await baseB.close()
+await dht.destroy()
+console.log('\nDone. All peers and DHT shut down.')

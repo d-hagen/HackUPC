@@ -1,5 +1,5 @@
 // Test: capability detection, meetsRequirements, pickWorkerForTask
-import { detectCapabilities, meetsRequirements, pickWorkerForTask, bestTorchDevice } from './capabilities.js'
+import { detectCapabilities, meetsRequirements, pickWorkerForTask, bestTorchDevice } from '../capabilities.js'
 import assert from 'assert'
 
 let passed = 0

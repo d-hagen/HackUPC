@@ -3,7 +3,7 @@ import Autobase from 'autobase'
 import Hyperswarm from 'hyperswarm'
 import crypto from 'crypto'
 import fs from 'fs'
-import { computeMandelbrot, createTileTasks } from './mandelbrot.js'
+import { computeMandelbrot, createTileTasks } from '../examples/mandelbrot.js'
 
 fs.rmSync('./test-peer-a', { recursive: true, force: true })
 fs.rmSync('./test-peer-b', { recursive: true, force: true })

@@ -3,7 +3,7 @@ import Corestore from 'corestore'
 import Autobase from 'autobase'
 import crypto from 'crypto'
 import fs from 'fs'
-import { executeTask } from './worker.js'
+import { executeTask } from '../worker.js'
 
 // Clean
 for (const d of ['store-r1', 'store-r2', 'store-w1', 'store-w2']) {
