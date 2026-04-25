@@ -8,6 +8,7 @@ import Hyperdrive from 'hyperdrive'
 import { NETWORK_TOPIC } from './base-setup.js'
 import { executeTask } from './worker.js'
 import { addDonated, loadReputation, getScore } from './reputation.js'
+import { detectCapabilities, meetsRequirements } from './capabilities.js'
 
 const workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
 const storePath = `./store-${workerId}`
@@ -67,6 +68,7 @@ let idleTimer = null
 let taskPollTimer = null
 let searching = true
 let joining = false // guard against concurrent joinRequester calls
+const myCapabilities = {} // populated async after swarm init
 
 function stopIdleTimer () {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
@@ -148,9 +150,10 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   await outputDrive.ready()
   mountedDrives.clear()
 
-  // Request to join (JSON on discovery connection — safe, no replication here)
+  // Request to join — include capabilities so requester can route tasks
   conn.write(JSON.stringify({
-    type: 'join-request', role: 'worker', writerKey, workerId
+    type: 'join-request', role: 'worker', writerKey, workerId,
+    capabilities: myCapabilities
   }))
 
   // Join the Autobase topic on the REPLICATION swarm (separate from discovery)
@@ -206,6 +209,7 @@ async function processTasks () {
         if (!entry.code) continue
       }
       if (entry.assignedTo && entry.assignedTo !== workerId) continue
+      if (entry.requires && !meetsRequirements(entry.requires, myCapabilities)) continue
 
       // Check if result exists
       let hasResult = false
@@ -285,7 +289,7 @@ async function processTasks () {
     processing = false
   }
 
-  // If we did work and there's nothing left, check for other requesters immediately
+  // If we did work and nothing left, check for other requesters immediately
   if (didWork) {
     let hasRemainingTasks = false
     for (let i = 0; i < base.view.length; i++) {
@@ -293,16 +297,16 @@ async function processTasks () {
       if (entry.type !== 'task') continue
       if (entry.taskType === 'shell' ? (!ALLOW_SHELL || !entry.cmd) : !entry.code) continue
       if (entry.assignedTo && entry.assignedTo !== workerId) continue
+      if (entry.requires && !meetsRequirements(entry.requires, myCapabilities)) continue
       if (completed.has(entry.id)) continue
       hasRemainingTasks = true
       break
     }
 
     if (!hasRemainingTasks) {
-      // Check if another requester has tasks waiting
       let betterOption = false
       for (const [id, info] of availableRequesters) {
-        if (id !== currentRequester && info.pendingTasks > 0 && Date.now() - info.ts < 30000) {
+        if (id !== currentRequester && info.pendingTasks > 0 && Date.now() - info.ts < 30000 && canHelpRequester(info)) {
           betterOption = true
           break
         }
@@ -315,6 +319,12 @@ async function processTasks () {
   }
 }
 
+function canHelpRequester (info) {
+  const reqs = info.pendingRequires || []
+  if (reqs.length === 0) return true
+  return reqs.some(req => meetsRequirements(req, myCapabilities))
+}
+
 function pickBestRequester () {
   if (!searching) return
 
@@ -324,6 +334,7 @@ function pickBestRequester () {
     if (Date.now() - info.ts > 30000) continue // skip stale
     if (info.pendingTasks <= 0) continue // skip idle
     if (info.conn.destroyed) continue // skip dead connections
+    if (!canHelpRequester(info)) continue // skip: no pending tasks this worker can run
     const score = info.reputation?.score ?? 0
     candidates.push({ id, info, score })
   }
@@ -362,6 +373,7 @@ discoverySwarm.on('connection', (conn) => {
         availableRequesters.set(msg.requesterId, {
           autobaseKey: msg.autobaseKey,
           pendingTasks: msg.pendingTasks || 0,
+          pendingRequires: msg.pendingRequires || [],
           workerCount: msg.workerCount || 0,
           reputation: msg.reputation || { donated: 0, consumed: 0, score: 0 },
           conn,
@@ -372,7 +384,7 @@ discoverySwarm.on('connection', (conn) => {
           if (msg.pendingTasks > 0) {
             const scoreStr = repScore !== 0 ? `, reputation: ${repScore}` : ''
             console.log(`[~] Found ${msg.requesterId} (${msg.pendingTasks} pending tasks${scoreStr})`)
-            pickBestRequester() // let ranking decide instead of joining immediately
+            pickBestRequester()
           } else {
             console.log(`[~] Found ${msg.requesterId} (no pending tasks, staying available)`)
           }
@@ -387,6 +399,16 @@ discoverySwarm.on('connection', (conn) => {
   })
 
   // NO replication on discovery connections
+})
+
+// Detect capabilities in background — doesn't block swarm startup
+console.log('Detecting capabilities...')
+detectCapabilities().then(caps => {
+  Object.assign(myCapabilities, caps)
+  console.log(`Platform: ${caps.platform}/${caps.arch} | CPU: ${caps.cpuCores} cores | RAM: ${caps.ramGB}GB`)
+  console.log(`GPU: ${caps.gpuName} (${caps.gpuType}) | Python: ${caps.hasPython ? caps.pythonVersion : 'no'} | PyTorch: ${caps.hasPyTorch ? caps.pytorchVersion : 'no'}`)
+  // Re-evaluate known requesters now that caps are populated
+  if (searching) pickBestRequester()
 })
 
 discoverySwarm.flush().then(() => console.log('DHT bootstrap complete.'))
