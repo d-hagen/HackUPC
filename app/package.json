@@ -2,8 +2,15 @@
   "name": "app",
   "main": "index.js",
   "pear": {
-    "name": "app",
-    "type": "terminal"
+    "name": "peercompute",
+    "type": "desktop",
+    "gui": {
+      "width": 1100,
+      "height": 780,
+      "minWidth": 800,
+      "minHeight": 600
+    },
+    "pre": "pear-electron/pre"
   },
   "type": "module",
   "license": "Apache-2.0",
@@ -12,6 +19,9 @@
     "test": "brittle test/*.test.js"
   },
   "dependencies": {
+    "pear-electron": "^1.7.28",
+    "pear-bridge": "^1.2.5",
+    "pear-pipe": "^1.0.6",
     "@hyperswarm/dht": "^6.5.1",
     "assert": "npm:bare-node-assert",
     "async_hooks": "npm:bare-node-async-hooks@^0.0.1",

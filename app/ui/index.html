@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PeerCompute</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- Titlebar -->
+<div id="titlebar">
+  <div class="logo">
+    <span>⚡</span> Peer<span>Compute</span>
+  </div>
+  <div class="mode-tabs">
+    <button class="mode-tab active" data-mode="both">Both</button>
+    <button class="mode-tab" data-mode="requester">Requester</button>
+    <button class="mode-tab" data-mode="worker">Worker</button>
+  </div>
+  <div class="network-badge">
+    <div class="dot" id="net-dot"></div>
+    <span id="net-label">Connecting…</span>
+  </div>
+</div>
+
+<!-- Main -->
+<div id="main">
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+
+    <!-- Requester stats -->
+    <div class="sidebar-section" id="requester-stats-section">
+      <div class="section-title">Requester</div>
+      <div class="stat-row">
+        <span class="stat-label">Workers</span>
+        <span class="stat-value accent" id="stat-workers">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Pending tasks</span>
+        <span class="stat-value" id="stat-pending">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Results</span>
+        <span class="stat-value green" id="stat-results">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Reputation</span>
+        <span class="stat-value" id="stat-rep">0</span>
+      </div>
+    </div>
+
+    <!-- Peer graph -->
+    <div class="sidebar-section" id="graph-section">
+      <div class="section-title">Peer Network</div>
+      <svg id="peer-graph" viewBox="0 0 232 120"></svg>
+    </div>
+
+    <!-- Worker self panel -->
+    <div class="sidebar-section" id="worker-stats-section">
+      <div class="section-title">Worker</div>
+      <div class="worker-self">
+        <div class="ws-title">This node</div>
+        <div class="ws-row"><span>Status</span><span id="ws-status">Idle</span></div>
+        <div class="ws-row"><span>Connected to</span><span id="ws-requester">—</span></div>
+        <div class="ws-row"><span>Tasks done</span><span id="ws-tasks">0</span></div>
+        <div class="ws-row"><span>Reputation</span><span id="ws-rep">0</span></div>
+      </div>
+    </div>
+
+    <!-- Connected workers list -->
+    <div class="sidebar-section">
+      <div class="section-title">Connected Workers</div>
+      <div id="worker-list">
+        <div class="empty-state" style="padding: 16px 0;">
+          <div class="es-sub">No workers yet</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Content -->
+  <div id="content">
+
+    <!-- Tabs -->
+    <div id="content-tabs">
+      <div class="ctab active" data-tab="tasks">Task Queue</div>
+      <div class="ctab" data-tab="submit">Submit</div>
+      <div class="ctab" data-tab="mandelbrot">Mandelbrot</div>
+      <div class="ctab" data-tab="log">Log</div>
+    </div>
+
+    <!-- Task Queue -->
+    <div class="tab-pane active" id="tab-tasks">
+      <div id="task-list-wrap">
+        <div class="empty-state" id="task-empty">
+          <div class="es-icon">📋</div>
+          <div class="es-title">No tasks yet</div>
+          <div class="es-sub">Submit a task from the Submit tab</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Submit -->
+    <div class="tab-pane" id="tab-submit">
+      <div id="submit-pane">
+        <div class="submit-type-tabs">
+          <button class="stype-btn active" data-stype="code">JS Code</button>
+          <button class="stype-btn" data-stype="job">Job File</button>
+          <button class="stype-btn" data-stype="shell">Shell</button>
+        </div>
+
+        <!-- Code mode -->
+        <div id="submit-code-mode">
+          <div class="code-editor">
+            <textarea id="code-input" placeholder="return 2 + 2&#10;// or&#10;return Array.from({length: 10}, (_, i) => i * i)" spellcheck="false"></textarea>
+          </div>
+          <div class="submit-row">
+            <button class="btn-run" id="btn-run-code">▶ Run Task</button>
+            <span class="input-hint">JS evaluated on a remote worker. Use <code>return</code> to send results back.</span>
+          </div>
+        </div>
+
+        <!-- Job file mode -->
+        <div id="submit-job-mode" style="display:none;">
+          <div id="drop-zone">
+            <div class="drop-icon">📁</div>
+            <div class="drop-title">Drop a .js job file here</div>
+            <div class="drop-sub">Or click to browse — must export data, split, compute, join</div>
+            <div class="drop-file" id="drop-file-name" style="display:none;"></div>
+          </div>
+          <input type="file" id="file-input" accept=".js" style="display:none;" />
+          <div class="submit-row">
+            <button class="btn-run" id="btn-run-job" disabled>▶ Run Job</button>
+            <input id="job-workers-input" type="number" min="1" max="32" placeholder="workers (auto)" style="width:130px; padding:7px 10px; background:var(--surface2); border:1px solid var(--border); border-radius:7px; color:var(--text); font-size:12px; outline:none;" />
+            <span class="input-hint">Splits job across N workers</span>
+          </div>
+        </div>
+
+        <!-- Shell mode -->
+        <div id="submit-shell-mode" style="display:none;">
+          <input id="shell-input" type="text" placeholder="echo hello world" spellcheck="false" />
+          <div class="submit-row">
+            <button class="btn-run" id="btn-run-shell">▶ Run Shell</button>
+            <span class="input-hint">Runs on a remote worker (ALLOW_SHELL must be enabled on worker)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mandelbrot -->
+    <div class="tab-pane" id="tab-mandelbrot">
+      <div id="mandelbrot-pane">
+        <div id="mandelbrot-placeholder">
+          <div class="ph-icon">🌀</div>
+          <div style="font-size:14px; font-weight:600; color:var(--text2);">Live Mandelbrot Viewer</div>
+          <div style="font-size:12px; text-align:center; max-width:280px; line-height:1.6;">
+            Run a mandelbrot job from the Submit tab.<br/>
+            Tiles will render live as workers return chunks.
+          </div>
+          <button class="btn-run" id="btn-start-mandelbrot" style="margin-top:8px;">▶ Run Mandelbrot Demo</button>
+        </div>
+        <canvas id="mandelbrot-canvas" style="display:none;" width="512" height="512"></canvas>
+        <div class="mandelbrot-info" id="mandelbrot-info" style="display:none;">
+          <div class="mand-stat">Chunks: <span id="mand-done">0</span>/<span id="mand-total">0</span></div>
+          <div class="mand-stat">Workers: <span id="mand-workers">0</span></div>
+          <div class="mand-stat">Elapsed: <span id="mand-elapsed">0ms</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Log -->
+    <div class="tab-pane" id="tab-log">
+      <div id="log-pane">
+        <div class="log-list" id="log-list"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
