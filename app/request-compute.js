@@ -1,6 +1,7 @@
 // Task requester: hosts own Autobase, advertises on network, assigns tasks to workers
 import { createBase, NETWORK_TOPIC } from './base-setup.js'
 import { loadReputation, addConsumed, getScore } from './reputation.js'
+import { pickWorkerForTask } from './capabilities.js'
 import { pathToFileURL } from 'url'
 import { resolve } from 'path'
 import crypto from 'crypto'
@@ -49,6 +50,24 @@ replicationSwarm.on('connection', (conn) => {
   store.replicate(conn)
 })
 
+// Parse --requires key=val,key2=val2 from start of string
+// Returns { requires: object|null, rest: string }
+function parseRequires (input) {
+  const match = input.match(/^--requires\s+(\S+)\s+(.*)$/s)
+  if (!match) return { requires: null, rest: input }
+  const pairs = match[1].split(',')
+  const requires = {}
+  for (const pair of pairs) {
+    const [k, v] = pair.split('=')
+    if (!k) continue
+    if (v === undefined || v === 'true') requires[k] = true
+    else if (v === 'false') requires[k] = false
+    else if (!isNaN(Number(v))) requires[k] = Number(v)
+    else requires[k] = v
+  }
+  return { requires, rest: match[2].trim() }
+}
+
 // Periodically re-broadcast availability
 const broadcastConns = new Set()
 
@@ -92,9 +111,12 @@ discoverySwarm.on('connection', (conn) => {
       if (msg.type === 'join-request' && msg.role === 'worker') {
         const writerKey = msg.writerKey
         if (!workers.has(writerKey)) {
-          workers.set(writerKey, { id: msg.workerId, ts: Date.now() })
+          const caps = msg.capabilities || {}
+          workers.set(writerKey, { id: msg.workerId, ts: Date.now(), caps })
           await base.append({ type: 'add-writer', key: writerKey, by: requesterId, ts: Date.now() })
-          console.log(`[+] Worker joined: ${msg.workerId}`)
+          const gpuStr = caps.hasGPU ? ` | GPU: ${caps.gpuName} (${caps.gpuType})` : ' | CPU only'
+          const coreStr = caps.cpuCores ? ` | ${caps.cpuCores} cores ${caps.ramGB}GB RAM` : ''
+          console.log(`[+] Worker joined: ${msg.workerId}${gpuStr}${coreStr}`)
           conn.write(JSON.stringify({ type: 'join-accepted', autobaseKey }))
           rl.prompt()
         }
@@ -185,10 +207,11 @@ const rl = readline.createInterface({ input: process.stdin, output: process.stdo
 function showHelp () {
   console.log(`
 Commands:
-  run <code>           Send JS code to execute
+  run [--requires k=v,...] <code>
+                       Send JS code to execute
                          run return 2 + 2
-                         run return Array.from({length:10}, (_,i) => i*i)
-                         Tasks with files get: readFile(path), listFiles(), writeFile(path, data)
+                         run --requires hasGPU=true return "gpu task"
+                         run --requires hasPyTorch=true,ramGB=8 return "heavy"
   file <path.js>       Send a .js file as a single task
   bundle <path.js> [arg1 arg2 ...]
                        Bundle a task file + its npm deps into one string, send to worker
@@ -196,9 +219,11 @@ Commands:
                          Example: bundle tasks/resize.js inputPath outputPath
   job <path.js> [n]    Run a distributed job (split across n workers, default=all)
                          Job file exports: data, split(data,n), compute(chunk), join(results)
-  shell <command>      Send a shell command to execute on a worker
+                         Optionally exports: requires (e.g. { hasGPU: true })
+  shell [--requires k=v,...] <command>
+                       Send a shell command to execute on a worker
                          shell python3 -c "print(2+2)"
-                         shell echo hello world
+                         shell --requires hasGPU=true nvidia-smi
                          shell --timeout 5000 sleep 10
   upload <file> [name] Upload a file to the shared drive (available to workers)
   files                List files on the shared drive
@@ -219,20 +244,24 @@ rl.on('line', async (line) => {
   if (!input) { rl.prompt(); return }
 
   if (input.startsWith('run ')) {
-    const code = input.slice(4).trim()
+    const { requires, rest: code } = parseRequires(input.slice(4).trim())
     if (workers.size === 0) {
       console.log('[!] No workers yet. Task queued — will run when a worker joins.')
     }
+    const assignedTo = pickWorkerForTask(requires, workers)
     const id = crypto.randomUUID()
     await base.append({
       type: 'task', id, code, argNames: [], args: [],
+      requires: requires || undefined,
+      assignedTo: assignedTo || undefined,
       driveKey,
       by: requesterId, ts: Date.now()
     })
     pendingTaskCount++
     addConsumed(1)
     broadcast()
-    console.log(`[>] Task ${id.slice(0, 8)}… posted`)
+    if (requires) console.log(`[>] Task ${id.slice(0, 8)}… posted (requires: ${JSON.stringify(requires)}, assigned: ${assignedTo || 'any'})`)
+    else console.log(`[>] Task ${id.slice(0, 8)}… posted`)
 
   } else if (input.startsWith('job ')) {
     const parts = input.slice(4).trim().split(/\s+/)
@@ -247,6 +276,7 @@ rl.on('line', async (line) => {
         rl.prompt(); return
       }
 
+      const jobRequires = mod.requires || null
       const n = nOverride || Math.max(1, workers.size)
       const chunks = mod.split(mod.data, n)
       const jobId = crypto.randomUUID()
@@ -258,6 +288,7 @@ rl.on('line', async (line) => {
         console.log('[!] No workers connected. Tasks queued — will run when workers join.')
       }
 
+      if (jobRequires) console.log(`[>] Job requires: ${JSON.stringify(jobRequires)}`)
       console.log(`[>] Job ${jobId.slice(0, 8)}… splitting into ${chunks.length} chunks across ${workerIds.length || '?'} worker(s)`)
 
       pendingJobs.set(jobId, {
@@ -269,11 +300,16 @@ rl.on('line', async (line) => {
       for (let i = 0; i < chunks.length; i++) {
         const taskId = crypto.randomUUID()
         taskToJob.set(taskId, { jobId, chunkIndex: i })
-        const assignedTo = workerIds.length > 0 ? workerIds[i % workerIds.length] : null
+        // For jobs with requirements, pick capable worker; otherwise round-robin
+        const assignedTo = jobRequires
+          ? pickWorkerForTask(jobRequires, workers)
+          : (workerIds.length > 0 ? workerIds[i % workerIds.length] : null)
         await base.append({
           type: 'task', id: taskId, jobId, chunkIndex: i, totalChunks: chunks.length,
           code, argNames: ['chunk'], args: [chunks[i]],
-          assignedTo, driveKey,
+          requires: jobRequires || undefined,
+          assignedTo: assignedTo || undefined,
+          driveKey,
           by: requesterId, ts: Date.now()
         })
       }
@@ -333,7 +369,7 @@ rl.on('line', async (line) => {
     }
 
   } else if (input.startsWith('shell ')) {
-    let cmdStr = input.slice(6).trim()
+    let { requires, rest: cmdStr } = parseRequires(input.slice(6).trim())
     let timeout = 60000
 
     const timeoutMatch = cmdStr.match(/--timeout\s+(\d+)/)
@@ -343,22 +379,26 @@ rl.on('line', async (line) => {
     }
 
     if (!cmdStr) {
-      console.log('[!] Usage: shell <command>')
+      console.log('[!] Usage: shell [--requires k=v,...] <command>')
       rl.prompt(); return
     }
 
     if (workers.size === 0) {
       console.log('[!] No workers yet. Task queued — will run when a shell-enabled worker joins.')
     }
+    const assignedTo = pickWorkerForTask(requires, workers)
     const id = crypto.randomUUID()
     await base.append({
       type: 'task', id, taskType: 'shell', cmd: cmdStr, timeout,
+      requires: requires || undefined,
+      assignedTo: assignedTo || undefined,
       by: requesterId, ts: Date.now()
     })
     pendingTaskCount++
     addConsumed(1)
     broadcast()
-    console.log(`[>] Shell task ${id.slice(0, 8)}… posted: ${cmdStr.slice(0, 60)}`)
+    if (requires) console.log(`[>] Shell task ${id.slice(0, 8)}… posted: ${cmdStr.slice(0, 60)} (requires: ${JSON.stringify(requires)}, assigned: ${assignedTo || 'any'})`)
+    else console.log(`[>] Shell task ${id.slice(0, 8)}… posted: ${cmdStr.slice(0, 60)}`)
 
   } else if (input === 'workers') {
     if (workers.size === 0) {

@@ -8,6 +8,7 @@ import Hyperdrive from 'hyperdrive'
 import { NETWORK_TOPIC } from './base-setup.js'
 import { executeTask } from './worker.js'
 import { addDonated, loadReputation, getScore } from './reputation.js'
+import { detectCapabilities, meetsRequirements } from './capabilities.js'
 
 const workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
 const storePath = `./store-${workerId}`
@@ -67,6 +68,7 @@ let idleTimer = null
 let taskPollTimer = null
 let searching = true
 let joining = false // guard against concurrent joinRequester calls
+const myCapabilities = {} // populated async after swarm init
 
 function stopIdleTimer () {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
@@ -148,9 +150,10 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   await outputDrive.ready()
   mountedDrives.clear()
 
-  // Request to join (JSON on discovery connection — safe, no replication here)
+  // Request to join — include capabilities so requester can route tasks
   conn.write(JSON.stringify({
-    type: 'join-request', role: 'worker', writerKey, workerId
+    type: 'join-request', role: 'worker', writerKey, workerId,
+    capabilities: myCapabilities
   }))
 
   // Join the Autobase topic on the REPLICATION swarm (separate from discovery)
@@ -206,6 +209,7 @@ async function processTasks () {
         if (!entry.code) continue
       }
       if (entry.assignedTo && entry.assignedTo !== workerId) continue
+      if (entry.requires && !meetsRequirements(entry.requires, myCapabilities)) continue
 
       // Check if result exists
       let hasResult = false
@@ -387,6 +391,14 @@ discoverySwarm.on('connection', (conn) => {
   })
 
   // NO replication on discovery connections
+})
+
+// Detect capabilities in background — doesn't block swarm startup
+console.log('Detecting capabilities...')
+detectCapabilities().then(caps => {
+  Object.assign(myCapabilities, caps)
+  console.log(`Platform: ${caps.platform}/${caps.arch} | CPU: ${caps.cpuCores} cores | RAM: ${caps.ramGB}GB`)
+  console.log(`GPU: ${caps.gpuName} (${caps.gpuType}) | Python: ${caps.hasPython ? caps.pythonVersion : 'no'} | PyTorch: ${caps.hasPyTorch ? caps.pytorchVersion : 'no'}`)
 })
 
 discoverySwarm.flush().then(() => console.log('DHT bootstrap complete.'))
