@@ -9,8 +9,9 @@ import fs from 'fs'
 import readline from 'readline'
 import Hyperswarm from 'hyperswarm'
 
-import { basename } from 'path'
+import { basename, extname } from 'path'
 import { bundleTask } from './bundler.js'
+import { execSync } from 'child_process'
 
 const requesterId = `requester-${crypto.randomUUID().slice(0, 8)}`
 const { base, swarm: replicationSwarm, store, drive, cleanup } = await createBase('./store-requester', null)
@@ -157,6 +158,35 @@ base.on('update', async () => {
           job.results.set(chunkIndex, entry.error ? { error: entry.error } : entry.output)
           console.log(`\n[<] Chunk ${chunkIndex + 1}/${job.totalChunks} done (by ${entry.by}, ${entry.elapsed || '?'}ms)`)
 
+          // Progressive PPM preview: write all received strips in order as a partial image
+          if (job.outputFile && extname(job.outputFile) === '.ppm') {
+            try {
+              const received = []
+              for (const [, strip] of [...job.results.entries()].sort((a, b) => {
+                const sa = a[1]; const sb = b[1]
+                return (sa && sa.startRow != null ? sa.startRow : 0) - (sb && sb.startRow != null ? sb.startRow : 0)
+              })) {
+                if (strip && strip.rows) received.push(strip)
+              }
+              if (received.length > 0) {
+                const w = received[0].rows[0].length
+                const h = received.reduce((s, r) => s + r.rows.length, 0)
+                let ppm = `P3\n${w} ${h}\n255\n`
+                for (const strip of received) {
+                  for (const row of strip.rows) {
+                    ppm += row.map(([r, g, b]) => `${r} ${g} ${b}`).join(' ') + '\n'
+                  }
+                }
+                fs.writeFileSync(job.outputFile, ppm)
+                if (job.results.size === 1) {
+                  // First strip — open Preview so it stays open and auto-refreshes
+                  try { execSync(`open -g ${job.outputFile}`) } catch {}
+                }
+                console.log(`    [~] Preview updated (${received.length}/${job.totalChunks} strips)`)
+              }
+            } catch {}
+          }
+
           if (job.results.size === job.totalChunks) {
             const errors = [...job.results.values()].filter(r => r && r.error)
             if (errors.length > 0) {
@@ -166,8 +196,16 @@ base.on('update', async () => {
               try {
                 const final = job.joinFn(ordered)
                 console.log(`\n[*] JOB ${jobId.slice(0, 8)}… COMPLETE`)
-                const out = typeof final === 'string' ? final : JSON.stringify(final, null, 2)
-                console.log(out.length > 2000 ? out.slice(0, 2000) + '…' : out)
+                if (job.outputFile) {
+                  fs.writeFileSync(job.outputFile, typeof final === 'string' ? final : JSON.stringify(final, null, 2))
+                  console.log(`    Saved → ${job.outputFile}`)
+                  if (extname(job.outputFile) !== '.ppm') {
+                    try { execSync(`open -g ${job.outputFile}`) } catch {}
+                  }
+                } else {
+                  const out = typeof final === 'string' ? final : JSON.stringify(final, null, 2)
+                  console.log(out.length > 2000 ? out.slice(0, 2000) + '…' : out)
+                }
               } catch (err) {
                 console.log(`[!] Join failed: ${err.message}`)
               }
@@ -302,7 +340,8 @@ rl.on('line', async (line) => {
       pendingJobs.set(jobId, {
         totalChunks: chunks.length,
         results: new Map(),
-        joinFn: mod.join
+        joinFn: mod.join,
+        outputFile: mod.outputFile || null
       })
 
       for (let i = 0; i < chunks.length; i++) {
