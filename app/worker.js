@@ -1,7 +1,51 @@
 // Generic task executor: runs arbitrary JS function code sent as a string
-// Supports optional file I/O via Hyperdrive
+// Supports optional file I/O via Hyperdrive and shell command execution
+
+import { spawn } from 'child_process'
+
+export function executeShellTask (task) {
+  const { cmd, timeout = 60000 } = task
+
+  if (!cmd) throw new Error('Shell task has no cmd field')
+
+  return new Promise((resolve, reject) => {
+    let stdout = ''
+    let stderr = ''
+    let killed = false
+
+    const proc = spawn('sh', ['-c', cmd], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: task.cwd || process.cwd()
+    })
+
+    const timer = setTimeout(() => {
+      killed = true
+      proc.kill('SIGKILL')
+    }, timeout)
+
+    proc.stdout.on('data', (d) => { stdout += d.toString() })
+    proc.stderr.on('data', (d) => { stderr += d.toString() })
+
+    proc.on('close', (exitCode) => {
+      clearTimeout(timer)
+      if (killed) {
+        resolve({ stdout, stderr, exitCode: -1, timedOut: true })
+      } else {
+        resolve({ stdout, stderr, exitCode })
+      }
+    })
+
+    proc.on('error', (err) => {
+      clearTimeout(timer)
+      reject(err)
+    })
+  })
+}
 
 export async function executeTask (task, inputDrive, outputDrive) {
+  if (task.taskType === 'shell') {
+    return executeShellTask(task)
+  }
   const { code, args = [] } = task
 
   if (!code) throw new Error('Task has no code field')

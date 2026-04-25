@@ -12,6 +12,7 @@ import { addDonated, loadReputation, getScore } from './reputation.js'
 const workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
 const storePath = `./store-${workerId}`
 const IDLE_TIMEOUT = 15000 // leave after 15s with no tasks
+const ALLOW_SHELL = process.env.ALLOW_SHELL === '1' || process.env.ALLOW_SHELL === 'true'
 
 console.log('╔═══════════════════════════════════════════╗')
 console.log('║         OFFER COMPUTE — Worker            ║')
@@ -19,7 +20,8 @@ console.log('╠═════════════════════�
 console.log(`║  Worker ID: ${workerId}                ║`)
 console.log('╚═══════════════════════════════════════════╝')
 console.log('')
-console.log(`Idle timeout: ${IDLE_TIMEOUT / 1000}s | Store: ${storePath}\n`)
+console.log(`Idle timeout: ${IDLE_TIMEOUT / 1000}s | Store: ${storePath}`)
+console.log(`Shell execution: ${ALLOW_SHELL ? 'ENABLED' : 'DISABLED (set ALLOW_SHELL=1 to enable)'}\n`)
 
 const BOOTSTRAP = process.env.BOOTSTRAP
 const swarmOpts = BOOTSTRAP
@@ -142,7 +144,11 @@ async function processTasks () {
   for (let i = 0; i < base.view.length; i++) {
     const entry = await base.view.get(i)
     if (entry.type !== 'task' || completed.has(entry.id)) continue
-    if (!entry.code) continue
+    if (entry.taskType === 'shell') {
+      if (!ALLOW_SHELL || !entry.cmd) continue
+    } else {
+      if (!entry.code) continue
+    }
     if (entry.assignedTo && entry.assignedTo !== workerId) continue
 
     // Check if result exists
@@ -157,7 +163,9 @@ async function processTasks () {
     didWork = true
     resetIdleTimer()
 
-    const codePreview = entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
+    const codePreview = entry.taskType === 'shell'
+      ? `[SHELL] ${entry.cmd.trim().slice(0, 60)}`
+      : entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
     console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview}`)
 
     // Mount requester's drive if task has files
@@ -193,8 +201,14 @@ async function processTasks () {
       tasksDone++
       totalTasksDone++
       addDonated(1)
-      const preview = JSON.stringify(output).slice(0, 80)
-      console.log(`[<] Done in ${elapsed}ms | ${preview}`)
+      if (entry.taskType === 'shell' && output) {
+        const stdoutPreview = (output.stdout || '').trim().slice(0, 80)
+        console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
+        if (output.timedOut) console.log(`    [!] Process timed out`)
+      } else {
+        const preview = JSON.stringify(output).slice(0, 80)
+        console.log(`[<] Done in ${elapsed}ms | ${preview}`)
+      }
       console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
     } catch (err) {
       await base.append({
@@ -210,7 +224,8 @@ async function processTasks () {
     let hasRemainingTasks = false
     for (let i = 0; i < base.view.length; i++) {
       const entry = await base.view.get(i)
-      if (entry.type !== 'task' || !entry.code) continue
+      if (entry.type !== 'task') continue
+      if (entry.taskType === 'shell' ? (!ALLOW_SHELL || !entry.cmd) : !entry.code) continue
       if (entry.assignedTo && entry.assignedTo !== workerId) continue
       if (completed.has(entry.id)) continue
       hasRemainingTasks = true

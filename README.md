@@ -52,7 +52,7 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 |---|---|---|
 | **Requester CLI** | `request-compute.js` | Done — hosts Autobase, advertises on network, assigns tasks, collects results |
 | **Worker CLI** | `offer-compute.js` | Done — discovers requesters, joins, executes tasks, roams when idle |
-| **Generic task executor** | `worker.js` | Done — runs arbitrary JS function bodies via `AsyncFunction` |
+| **Generic task executor** | `worker.js` | Done — runs arbitrary JS function bodies via `AsyncFunction`, shell commands via subprocess |
 | **Shared Autobase setup** | `base-setup.js` | Done — creates Autobase + Hyperswarm + Hyperdrive, handles local/public DHT |
 | **Reputation system** | `reputation.js` | Done — local ledger (donated/consumed), score broadcast in advertisements |
 | **File transfer (Hyperdrive)** | `base-setup.js` + `worker.js` | Done — upload/download files between peers, task code gets `readFile()`/`writeFile()` |
@@ -63,6 +63,8 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 | **Single task execution** | Done — `run <code>` sends any JS to a worker |
 | **File-based tasks** | Done — `file <path.js>` sends a .js file as task |
 | **Distributed jobs (split/join)** | Done — `job <path.js> [n]` splits data across N workers, joins results |
+| **Shell command execution** | Done — `shell <command>` runs any shell command on a worker (`ALLOW_SHELL=1`) |
+| **Task timeout + kill** | Done — shell tasks have configurable timeout (default 60s), SIGKILL on expiry |
 | **Worker assignment** | Done — round-robin `assignedTo` prevents duplicate computation |
 
 ### Marketplace Model
@@ -98,22 +100,22 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 
 ### 1. Real Large-Scale Computing Tasks
 
-**Current limitation:** Tasks must be pure JS function bodies. No imports, no GPU, no subprocess execution.
+**Current limitation:** Tasks are JS function bodies or shell commands. No imports, no GPU, no sandboxing yet.
 
 | Feature | What | Why | Effort |
 |---|---|---|---|
-| **Subprocess execution** | Workers run shell commands (`python script.py`, `blender -b`, `ffmpeg`) via `child_process` | Unlocks any language/tool, not just JS | Medium |
+| ~~**Subprocess execution**~~ | ~~Workers run shell commands via `child_process`~~ | ~~Unlocks any language/tool~~ | **Done** |
 | ~~**File transfer via Hyperdrive**~~ | ~~Send/receive files (datasets, images, models) alongside tasks~~ | ~~JSON can't carry GBs of data~~ | **Done** |
 | ~~**Binary data support**~~ | ~~`Buffer`/`ArrayBuffer` via Hyperdrive~~ | ~~Images, audio, model weights~~ | **Done** |
+| ~~**Task timeout + kill**~~ | ~~Kill subprocess after N seconds~~ | ~~Infinite loops block workers~~ | **Done** |
 | **npm/module support** | Bundle dependencies with task code, or pre-install on workers | Real code needs libraries | Medium |
-| **Task timeout + kill** | Wrap execution in child process, kill after N seconds | Infinite loops block workers forever | Low |
 | **Worker thread pool** | `worker_threads` for parallel task execution per worker | One task at a time wastes multi-core CPUs | Medium |
 | **WASM sandbox** | Execute WASM modules for safe, portable, near-native compute | Security + performance + language-agnostic | High |
 | **GPU access** | WebGPU/WGSL or native CUDA passthrough | ML inference, rendering, crypto | High |
 | **Streaming results** | Partial/progress updates during long tasks | Users need feedback on 10-min renders | Low |
 | **Task dependencies** | DAG of tasks: B runs only after A completes | Multi-stage pipelines (preprocess → train → evaluate) | Medium |
 
-**Priority for demo:** Subprocess execution would unlock rendering and ML inference. File transfer is done via Hyperdrive — requester uploads files, worker reads them via `readFile()`, writes outputs via `writeFile()`, requester downloads results.
+**Subprocess execution + file transfer are done.** Workers can run `python`, `ffmpeg`, `blender`, etc. via `shell <command>` (opt-in with `ALLOW_SHELL=1`). Timeout kills runaway processes. File transfer via Hyperdrive handles input/output data.
 
 ### 2. UI & App
 

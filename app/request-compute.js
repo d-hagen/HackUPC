@@ -138,6 +138,11 @@ base.on('update', async () => {
         console.log(`\n[<] Result from ${entry.by} (task ${entry.taskId.slice(0, 8)}…)`)
         if (entry.error) {
           console.log(`    Error: ${entry.error}`)
+        } else if (entry.output && entry.output.stdout !== undefined) {
+          console.log(`    Exit code: ${entry.output.exitCode}`)
+          if (entry.output.timedOut) console.log(`    [!] Process timed out`)
+          if (entry.output.stdout) console.log(`    stdout: ${entry.output.stdout.slice(0, 400)}`)
+          if (entry.output.stderr) console.log(`    stderr: ${entry.output.stderr.slice(0, 200)}`)
         } else {
           const out = JSON.stringify(entry.output, null, 2)
           console.log(out.length > 500 ? `    ${out.slice(0, 500)}…` : `    ${out}`)
@@ -164,6 +169,10 @@ Commands:
   file <path.js>       Send a .js file as a single task
   job <path.js> [n]    Run a distributed job (split across n workers, default=all)
                          Job file exports: data, split(data,n), compute(chunk), join(results)
+  shell <command>      Send a shell command to execute on a worker
+                         shell python3 -c "print(2+2)"
+                         shell echo hello world
+                         shell --timeout 5000 sleep 10
   upload <file> [name] Upload a file to the shared drive (available to workers)
   files                List files on the shared drive
   download <path>      Download a file from worker output
@@ -273,6 +282,35 @@ rl.on('line', async (line) => {
     } catch (err) {
       console.log(`[!] Error reading file: ${err.message}`)
     }
+
+  } else if (input.startsWith('shell ')) {
+    let cmdStr = input.slice(6).trim()
+    let timeout = 60000
+
+    const timeoutMatch = cmdStr.match(/--timeout\s+(\d+)/)
+    if (timeoutMatch) {
+      timeout = parseInt(timeoutMatch[1])
+      cmdStr = cmdStr.replace(/--timeout\s+\d+/, '').trim()
+    }
+
+    if (!cmdStr) {
+      console.log('[!] Usage: shell <command>')
+      rl.prompt(); return
+    }
+
+    if (workers.size === 0) {
+      console.log('[!] No workers yet. Task queued — will run when a shell-enabled worker joins.')
+    }
+    const id = crypto.randomUUID()
+    pendingTaskCount++
+    broadcast()
+    await base.append({
+      type: 'task', id, taskType: 'shell', cmd: cmdStr, timeout,
+      by: requesterId, ts: Date.now()
+    })
+    addConsumed(1)
+    broadcast()
+    console.log(`[>] Shell task ${id.slice(0, 8)}… posted: ${cmdStr.slice(0, 60)}`)
 
   } else if (input === 'workers') {
     if (workers.size === 0) {
