@@ -244,33 +244,22 @@ base.on('update', async () => {
             try {
               const received = [...job.results.values()].filter(r => r && r.rows)
               if (received.length > 0) {
-                const isGrid = received[0].startCol != null && received[0].startCol > 0
-                let ppm
-                if (isGrid) {
-                  // Reconstruct partial image: place blocks at their 2D position, blank elsewhere
-                  const fullW = received.reduce((m, r) => Math.max(m, r.endCol), 0)
-                  const fullH = received.reduce((m, r) => Math.max(m, r.endRow), 0)
-                  const grid = Array.from({ length: fullH }, () => Array(fullW).fill(null))
-                  for (const block of received) {
-                    for (let y = 0; y < block.rows.length; y++) {
-                      for (let x = 0; x < block.rows[y].length; x++) {
-                        grid[block.startRow + y][block.startCol + x] = block.rows[y][x]
-                      }
+                // Always render full image dimensions — place each block at correct position,
+                // gray (40,40,40) for unreceived regions so proportions stay correct
+                const fullW = received.reduce((m, r) => Math.max(m, r.endCol ?? r.rows[0].length), 0)
+                const fullH = received.reduce((m, r) => Math.max(m, r.endRow), 0)
+                const grid = Array.from({ length: fullH }, () => new Array(fullW).fill(null))
+                for (const block of received) {
+                  const colOffset = block.startCol ?? 0
+                  for (let y = 0; y < block.rows.length; y++) {
+                    for (let x = 0; x < block.rows[y].length; x++) {
+                      grid[block.startRow + y][colOffset + x] = block.rows[y][x]
                     }
                   }
-                  ppm = `P3\n${fullW} ${fullH}\n255\n`
-                  for (const row of grid) {
-                    ppm += row.map(px => px ? `${px[0]} ${px[1]} ${px[2]}` : '180 180 180').join(' ') + '\n'
-                  }
-                } else {
-                  // Strips: concatenate in row order
-                  received.sort((a, b) => a.startRow - b.startRow)
-                  const w = received[0].rows[0].length
-                  const h = received.reduce((s, r) => s + r.rows.length, 0)
-                  ppm = `P3\n${w} ${h}\n255\n`
-                  for (const strip of received) {
-                    for (const row of strip.rows) ppm += row.map(([r, g, b]) => `${r} ${g} ${b}`).join(' ') + '\n'
-                  }
+                }
+                let ppm = `P3\n${fullW} ${fullH}\n255\n`
+                for (const row of grid) {
+                  ppm += row.map(px => px ? `${px[0]} ${px[1]} ${px[2]}` : '40 40 40').join(' ') + '\n'
                 }
                 const pngFile = job.outputFile.replace('.ppm', '.png')
                 fs.writeFileSync(job.outputFile, ppm)
