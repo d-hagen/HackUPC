@@ -4,15 +4,22 @@ import Autobase from 'autobase'
 import Hyperswarm from 'hyperswarm'
 import crypto from 'crypto'
 import fs from 'fs'
+import os from 'os'
 import Hyperdrive from 'hyperdrive'
 import { NETWORK_TOPIC } from './base-setup.js'
 import { executeTask } from './worker.js'
 import { addDonated, loadReputation, getScore } from './reputation.js'
+import { ThreadPool } from './thread-pool.js'
 
 const workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
 const storePath = `./store-${workerId}`
 const IDLE_TIMEOUT = 15000 // leave after 15s with no tasks
 const ALLOW_SHELL = process.env.ALLOW_SHELL === '1' || process.env.ALLOW_SHELL === 'true'
+const POOL_SIZE = Number(process.env.POOL_SIZE) || Math.max(1, os.cpus().length - 1)
+
+// Thread pool for parallel pure-compute tasks
+const pool = new ThreadPool(POOL_SIZE)
+await pool.start()
 
 console.log('╔═══════════════════════════════════════════╗')
 console.log('║         OFFER COMPUTE — Worker            ║')
@@ -21,6 +28,7 @@ console.log(`║  Worker ID: ${workerId}                ║`)
 console.log('╚═══════════════════════════════════════════╝')
 console.log('')
 console.log(`Idle timeout: ${IDLE_TIMEOUT / 1000}s | Store: ${storePath}`)
+console.log(`Thread pool: ${POOL_SIZE} thread(s) | CPUs: ${os.cpus().length}`)
 console.log(`Shell execution: ${ALLOW_SHELL ? 'ENABLED' : 'DISABLED (set ALLOW_SHELL=1 to enable)'}\n`)
 
 const BOOTSTRAP = process.env.BOOTSTRAP
@@ -43,7 +51,9 @@ function open (s) { return s.get('view', { valueEncoding: 'json' }) }
 async function apply (nodes, view, b) {
   for (const node of nodes) {
     if (node.value.type === 'add-writer') {
-      await b.addWriter(Buffer.from(node.value.key, 'hex'), { indexer: true })
+      try {
+        await b.addWriter(Buffer.from(node.value.key, 'hex'), { indexer: false })
+      } catch {}
     }
     await view.append(node.value)
   }
@@ -56,7 +66,9 @@ let currentRequester = null
 let currentDiscoveryKey = null
 let tasksDone = 0
 let totalTasksDone = 0
-const completed = new Set()
+let scanning = false // guard against concurrent processTasks scans
+const completed = new Set()   // tasks fully done (result appended)
+const inflight = new Set()    // tasks currently executing on threads
 const availableRequesters = new Map() // requesterId -> { autobaseKey, pendingTasks, conn, ts }
 const mountedDrives = new Map() // driveKey hex -> Hyperdrive instance
 let outputDrive = null // worker's own drive for output files
@@ -65,8 +77,12 @@ let taskPollTimer = null
 let searching = true
 let joining = false // guard against concurrent joinRequester calls
 
+function stopIdleTimer () {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+}
+
 function resetIdleTimer () {
-  if (idleTimer) clearTimeout(idleTimer)
+  stopIdleTimer()
   idleTimer = setTimeout(() => {
     if (base && !searching) {
       console.log(`[~] Idle for ${IDLE_TIMEOUT / 1000}s, leaving ${currentRequester}…`)
@@ -76,31 +92,37 @@ function resetIdleTimer () {
 }
 
 async function leaveCurrentRequester () {
+  // Nullify base and store immediately (synchronous) so concurrent
+  // processTasks / poll calls bail at the `if (!base)` guard
+  const leavingBase = base
+  const leavingStore = store
+  const leavingId = currentRequester
+  const leavingDiscoveryKey = currentDiscoveryKey
+  base = null
+  store = null
+  currentRequester = null
+  currentDiscoveryKey = null
+
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
   if (taskPollTimer) { clearInterval(taskPollTimer); taskPollTimer = null }
 
-  const leavingId = currentRequester
-
   // Leave Autobase replication topic on the replication swarm
-  if (currentDiscoveryKey) {
-    replicationSwarm.leave(currentDiscoveryKey)
-    currentDiscoveryKey = null
+  if (leavingDiscoveryKey) {
+    replicationSwarm.leave(leavingDiscoveryKey)
   }
 
   // Close old base
-  if (base) {
-    try { await base.close() } catch {}
-    base = null
-    store = null
+  if (leavingBase) {
+    try { await leavingBase.close() } catch {}
   }
 
   // Remove from pool so we don't rejoin immediately
   if (leavingId) availableRequesters.delete(leavingId)
 
   console.log(`[~] Left ${leavingId || 'unknown'} (${tasksDone} tasks done)\n`)
-  currentRequester = null
   tasksDone = 0
   completed.clear()
+  inflight.clear()
   searching = true
 
   console.log('Searching for requesters with tasks...\n')
@@ -114,6 +136,12 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   currentRequester = requesterId
 
   console.log(`[~] Joining ${requesterId}…`)
+
+  // Close old output drive if lingering from previous session
+  if (outputDrive) {
+    try { await outputDrive.close() } catch {}
+    outputDrive = null
+  }
 
   fs.rmSync(storePath, { recursive: true, force: true })
   store = new Corestore(storePath)
@@ -164,122 +192,160 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   console.log(`[~] Connected to ${requesterId}, waiting for authorization...\n`)
 }
 
-async function processTasks () {
-  if (!base || !base.writable) return
+// Determine if a task needs main-thread execution (Hyperdrive I/O or shell)
+function needsMainThread (entry) {
+  return entry.taskType === 'shell' || entry.driveKey
+}
 
-  let didWork = false
+// Post result to Autobase and update counters (always runs on main thread)
+async function postResult (entry, output, elapsed, isError) {
+  if (!base) return
+  if (isError) {
+    await base.append({
+      type: 'result', taskId: entry.id, error: output,
+      by: workerId, ts: Date.now()
+    })
+    console.log(`[!] Error: ${output}\n`)
+  } else {
+    // Check if output files were written
+    const outputFiles = []
+    if (outputDrive) {
+      for await (const f of outputDrive.list('/')) {
+        outputFiles.push(f.key)
+      }
+    }
 
-  for (let i = 0; i < base.view.length; i++) {
-    const entry = await base.view.get(i)
-    if (entry.type !== 'task' || completed.has(entry.id)) continue
-    if (entry.taskType === 'shell') {
-      if (!ALLOW_SHELL || !entry.cmd) continue
+    await base.append({
+      type: 'result', taskId: entry.id, output,
+      elapsed: Number(elapsed), by: workerId, ts: Date.now(),
+      driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
+      outputFiles: outputFiles.length > 0 ? outputFiles : undefined
+    })
+    tasksDone++
+    totalTasksDone++
+    addDonated(1)
+    if (entry.taskType === 'shell' && output) {
+      const stdoutPreview = (output.stdout || '').trim().slice(0, 80)
+      console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
+      if (output.timedOut) console.log(`    [!] Process timed out`)
     } else {
-      if (!entry.code) continue
+      const preview = JSON.stringify(output).slice(0, 80)
+      console.log(`[<] Done in ${elapsed}ms | ${preview}`)
     }
-    if (entry.assignedTo && entry.assignedTo !== workerId) continue
+    console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total | ${inflight.size} in-flight)\n`)
+  }
+  inflight.delete(entry.id)
+  resetIdleTimer()
+}
 
-    // Check if result exists
-    let hasResult = false
-    for (let j = 0; j < base.view.length; j++) {
-      const e = await base.view.get(j)
-      if (e.type === 'result' && e.taskId === entry.id) { hasResult = true; break }
+// Execute a task on the main thread (shell or file I/O tasks)
+async function executeOnMainThread (entry) {
+  let inputDrive = null
+  if (entry.driveKey && store) {
+    if (!mountedDrives.has(entry.driveKey)) {
+      const d = new Hyperdrive(store, Buffer.from(entry.driveKey, 'hex'))
+      await d.ready()
+      mountedDrives.set(entry.driveKey, d)
     }
-    if (hasResult) { completed.add(entry.id); continue }
-
-    completed.add(entry.id)
-    didWork = true
-    resetIdleTimer()
-
-    const codePreview = entry.taskType === 'shell'
-      ? `[SHELL] ${entry.cmd.trim().slice(0, 60)}`
-      : entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
-    console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview}`)
-
-    // Mount requester's drive if task has files
-    let inputDrive = null
-    if (entry.driveKey && store) {
-      if (!mountedDrives.has(entry.driveKey)) {
-        const d = new Hyperdrive(store, Buffer.from(entry.driveKey, 'hex'))
-        await d.ready()
-        mountedDrives.set(entry.driveKey, d)
-      }
-      inputDrive = mountedDrives.get(entry.driveKey)
-      // Wait for drive data to sync from requester (Autobase replicates faster than Hyperdrive)
-      for (let attempt = 0; attempt < 10; attempt++) {
-        await inputDrive.update()
-        if (inputDrive.version > 0) break
-        await new Promise(r => setTimeout(r, 500))
-      }
-    }
-
-    const t0 = performance.now()
-    try {
-      const output = await executeTask(entry, inputDrive, outputDrive)
-      const elapsed = (performance.now() - t0).toFixed(2)
-
-      // Check if output files were written
-      const outputFiles = []
-      if (outputDrive) {
-        for await (const f of outputDrive.list('/')) {
-          outputFiles.push(f.key)
-        }
-      }
-
-      await base.append({
-        type: 'result', taskId: entry.id, output,
-        elapsed: Number(elapsed), by: workerId, ts: Date.now(),
-        driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
-        outputFiles: outputFiles.length > 0 ? outputFiles : undefined
-      })
-      tasksDone++
-      totalTasksDone++
-      addDonated(1)
-      if (entry.taskType === 'shell' && output) {
-        const stdoutPreview = (output.stdout || '').trim().slice(0, 80)
-        console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
-        if (output.timedOut) console.log(`    [!] Process timed out`)
-      } else {
-        const preview = JSON.stringify(output ?? null).slice(0, 80)
-        console.log(`[<] Done in ${elapsed}ms | ${preview}`)
-      }
-      console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
-    } catch (err) {
-      await base.append({
-        type: 'result', taskId: entry.id, error: err.message,
-        by: workerId, ts: Date.now()
-      })
-      console.log(`[!] Error: ${err.message}\n`)
+    inputDrive = mountedDrives.get(entry.driveKey)
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await inputDrive.update()
+      if (inputDrive.version > 0) break
+      await new Promise(r => setTimeout(r, 500))
     }
   }
 
-  // If we did work and there's nothing left, check for other requesters immediately
-  if (didWork) {
-    let hasRemainingTasks = false
+  const t0 = performance.now()
+  try {
+    const output = await executeTask(entry, inputDrive, outputDrive)
+    const elapsed = (performance.now() - t0).toFixed(2)
+    await postResult(entry, output, elapsed, false)
+  } catch (err) {
+    await postResult(entry, err.message, 0, true)
+  }
+}
+
+// Dispatch a pure-compute task to the thread pool
+function dispatchToPool (entry) {
+  const t0 = performance.now()
+
+  pool.runTask(entry).then(async (output) => {
+    const elapsed = (performance.now() - t0).toFixed(2)
+    await postResult(entry, output, elapsed, false)
+    // Re-scan — pool thread freed up, there may be queued tasks
+    processTasks()
+  }).catch(async (err) => {
+    await postResult(entry, err.message, 0, true)
+    processTasks()
+  })
+}
+
+async function processTasks () {
+  if (!base || !base.writable || scanning) return
+  scanning = true
+
+  let dispatched = 0
+
+  try {
     for (let i = 0; i < base.view.length; i++) {
       const entry = await base.view.get(i)
       if (entry.type !== 'task') continue
-      if (entry.taskType === 'shell' ? (!ALLOW_SHELL || !entry.cmd) : !entry.code) continue
+      if (completed.has(entry.id) || inflight.has(entry.id)) continue
+      if (entry.taskType === 'shell') {
+        if (!ALLOW_SHELL || !entry.cmd) continue
+      } else {
+        if (!entry.code) continue
+      }
       if (entry.assignedTo && entry.assignedTo !== workerId) continue
-      if (completed.has(entry.id)) continue
-      hasRemainingTasks = true
+
+      // Check if result already exists in log
+      let hasResult = false
+      for (let j = 0; j < base.view.length; j++) {
+        const e = await base.view.get(j)
+        if (e.type === 'result' && e.taskId === entry.id) { hasResult = true; break }
+      }
+      if (hasResult) { completed.add(entry.id); continue }
+
+      // Claim task
+      inflight.add(entry.id)
+      dispatched++
+      stopIdleTimer()
+
+      const codePreview = entry.taskType === 'shell'
+        ? `[SHELL] ${entry.cmd.trim().slice(0, 60)}`
+        : entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
+
+      if (needsMainThread(entry)) {
+        // Shell / file-I/O tasks run on main thread (no thread pool)
+        console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [main]`)
+        executeOnMainThread(entry)
+      } else {
+        // Pure compute — dispatch to thread pool
+        console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [pool ${pool.available}/${pool.size} free]`)
+        dispatchToPool(entry)
+      }
+    }
+  } finally {
+    scanning = false
+  }
+
+  // If nothing dispatched and nothing in-flight, check for roaming
+  if (dispatched === 0 && inflight.size === 0) {
+    checkRoaming()
+  }
+}
+
+function checkRoaming () {
+  let betterOption = false
+  for (const [id, info] of availableRequesters) {
+    if (id !== currentRequester && info.pendingTasks > 0 && Date.now() - info.ts < 30000) {
+      betterOption = true
       break
     }
-
-    if (!hasRemainingTasks) {
-      // Check if another requester has tasks waiting
-      let betterOption = false
-      for (const [id, info] of availableRequesters) {
-        if (id !== currentRequester && info.pendingTasks > 0 && Date.now() - info.ts < 30000) {
-          betterOption = true
-          break
-        }
-      }
-      if (betterOption) {
-        console.log('[~] All tasks done here, another requester has work — moving on')
-        leaveCurrentRequester()
-      }
-    }
+  }
+  if (betterOption) {
+    console.log('[~] All tasks done here, another requester has work — moving on')
+    leaveCurrentRequester()
   }
 }
 
@@ -291,6 +357,7 @@ function pickBestRequester () {
   for (const [id, info] of availableRequesters) {
     if (Date.now() - info.ts > 30000) continue // skip stale
     if (info.pendingTasks <= 0) continue // skip idle
+    if (info.conn.destroyed) continue // skip dead connections
     const score = info.reputation?.score ?? 0
     candidates.push({ id, info, score })
   }
@@ -308,7 +375,11 @@ function pickBestRequester () {
     if (candidates.length > 1) {
       console.log(`    (${candidates.length - 1} other requester(s) available, picked highest reputation)`)
     }
-    joinRequester(pick.id, pick.info.autobaseKey, pick.info.conn)
+    joinRequester(pick.id, pick.info.autobaseKey, pick.info.conn).catch((err) => {
+      console.log(`[!] Failed to join ${pick.id}: ${err.message}`)
+      searching = true
+      currentRequester = null
+    })
   }
 }
 
@@ -365,6 +436,7 @@ process.on('SIGINT', async () => {
   console.log(`\nShutting down… (${totalTasksDone} tasks completed, reputation: score=${getScore(rep)})`)
   if (idleTimer) clearTimeout(idleTimer)
   if (taskPollTimer) clearInterval(taskPollTimer)
+  await pool.destroy()
   await discoverySwarm.destroy()
   await replicationSwarm.destroy()
   if (base) try { await base.close() } catch {}

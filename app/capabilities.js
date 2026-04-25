@@ -113,6 +113,13 @@ export async function detectCapabilities () {
   }
 }
 
+// Recommended thread pool size for this machine
+export function recommendedPoolSize (caps) {
+  if (!caps) return Math.max(1, os.cpus().length - 1)
+  // Reserve 1 core for main thread (event loop, networking, Autobase)
+  return Math.max(1, (caps.cpuCores || os.cpus().length) - 1)
+}
+
 // Best torch device string for a task given worker caps
 export function bestTorchDevice (caps) {
   if (caps.hasCUDA) return 'cuda'

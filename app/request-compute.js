@@ -109,6 +109,9 @@ Promise.all([discoverySwarm.flush(), replicationSwarm.flush()])
   .then(() => console.log('DHT bootstrap complete.'))
 console.log('Advertising on network, waiting for workers...\n')
 
+// Re-broadcast every 10s so workers that missed initial ads can discover us
+setInterval(() => broadcast(), 10000)
+
 // Watch for results
 base.on('update', async () => {
   for (let i = 0; i < base.view.length; i++) {
@@ -145,6 +148,10 @@ base.on('update', async () => {
               }
             }
             pendingJobs.delete(jobId)
+            // Clean up task-to-job mappings for this completed job
+            for (const [taskId, mapping] of taskToJob) {
+              if (mapping.jobId === jobId) taskToJob.delete(taskId)
+            }
             pendingTaskCount = Math.max(0, pendingTaskCount - job.totalChunks)
             broadcast()
           }
@@ -218,13 +225,12 @@ rl.on('line', async (line) => {
       console.log('[!] No workers yet. Task queued — will run when a worker joins.')
     }
     const id = crypto.randomUUID()
-    pendingTaskCount++
-    broadcast()
     await base.append({
       type: 'task', id, code, argNames: [], args: [],
       driveKey,
       by: requesterId, ts: Date.now()
     })
+    pendingTaskCount++
     addConsumed(1)
     broadcast()
     console.log(`[>] Task ${id.slice(0, 8)}… posted`)
@@ -261,9 +267,6 @@ rl.on('line', async (line) => {
         joinFn: mod.join
       })
 
-      pendingTaskCount += chunks.length
-      broadcast()
-
       for (let i = 0; i < chunks.length; i++) {
         const taskId = crypto.randomUUID()
         taskToJob.set(taskId, { jobId, chunkIndex: i })
@@ -275,6 +278,7 @@ rl.on('line', async (line) => {
           by: requesterId, ts: Date.now()
         })
       }
+      pendingTaskCount += chunks.length
       addConsumed(chunks.length)
       broadcast()
       console.log(`[>] ${chunks.length} subtasks posted`)
@@ -291,12 +295,11 @@ rl.on('line', async (line) => {
         console.log('[!] No workers yet. Task queued.')
       }
       const id = crypto.randomUUID()
-      pendingTaskCount++
-      broadcast()
       await base.append({
         type: 'task', id, code, argNames: [], args: [],
         driveKey, by: requesterId, ts: Date.now()
       })
+      pendingTaskCount++
       addConsumed(1)
       broadcast()
       console.log(`[>] Task from ${filePath} posted (${id.slice(0, 8)}…)`)
@@ -366,12 +369,11 @@ rl.on('line', async (line) => {
       console.log('[!] No workers yet. Task queued — will run when a shell-enabled worker joins.')
     }
     const id = crypto.randomUUID()
-    pendingTaskCount++
-    broadcast()
     await base.append({
       type: 'task', id, taskType: 'shell', cmd: cmdStr, timeout,
       by: requesterId, ts: Date.now()
     })
+    pendingTaskCount++
     addConsumed(1)
     broadcast()
     console.log(`[>] Shell task ${id.slice(0, 8)}… posted: ${cmdStr.slice(0, 60)}`)
