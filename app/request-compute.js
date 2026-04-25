@@ -159,7 +159,7 @@ base.on('update', async () => {
           if (entry.output.stdout) console.log(`    stdout: ${entry.output.stdout.slice(0, 400)}`)
           if (entry.output.stderr) console.log(`    stderr: ${entry.output.stderr.slice(0, 200)}`)
         } else {
-          const out = JSON.stringify(entry.output, null, 2)
+          const out = JSON.stringify(entry.output ?? null, null, 2)
           console.log(out.length > 500 ? `    ${out.slice(0, 500)}…` : `    ${out}`)
         }
         if (entry.elapsed) console.log(`    (${entry.elapsed}ms)`)

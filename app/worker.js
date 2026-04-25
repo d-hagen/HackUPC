@@ -86,5 +86,5 @@ export async function executeTask (task, inputDrive, outputDrive) {
 
   const fn = new (Object.getPrototypeOf(async function () {}).constructor)(...argNames, code)
   const result = await fn(...args)
-  return result
+  return result === undefined ? null : result
 }

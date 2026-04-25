@@ -63,6 +63,7 @@ let outputDrive = null // worker's own drive for output files
 let idleTimer = null
 let taskPollTimer = null
 let searching = true
+let joining = false // guard against concurrent joinRequester calls
 
 function resetIdleTimer () {
   if (idleTimer) clearTimeout(idleTimer)
@@ -107,8 +108,9 @@ async function leaveCurrentRequester () {
 }
 
 async function joinRequester (requesterId, autobaseKey, conn) {
-  if (!searching) return
+  if (!searching || joining) return
   searching = false
+  joining = true
   currentRequester = requesterId
 
   console.log(`[~] Joining ${requesterId}…`)
@@ -157,6 +159,7 @@ async function joinRequester (requesterId, autobaseKey, conn) {
     } catch {}
   }, 2000)
 
+  joining = false
   resetIdleTimer()
   console.log(`[~] Connected to ${requesterId}, waiting for authorization...\n`)
 }
@@ -237,7 +240,7 @@ async function processTasks () {
         console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
         if (output.timedOut) console.log(`    [!] Process timed out`)
       } else {
-        const preview = JSON.stringify(output).slice(0, 80)
+        const preview = JSON.stringify(output ?? null).slice(0, 80)
         console.log(`[<] Done in ${elapsed}ms | ${preview}`)
       }
       console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
