@@ -1,4 +1,4 @@
-// Task requester: creates a compute network, auto-discovers workers, sends tasks
+// Task requester: hosts own Autobase, advertises on network, assigns tasks to workers
 import { createBase, NETWORK_TOPIC } from './base-setup.js'
 import { pathToFileURL } from 'url'
 import { resolve } from 'path'
@@ -6,65 +6,97 @@ import crypto from 'crypto'
 import fs from 'fs'
 import readline from 'readline'
 
+const requesterId = `requester-${crypto.randomUUID().slice(0, 8)}`
 const { base, swarm, cleanup } = await createBase('./store-requester', null)
 const autobaseKey = base.key.toString('hex')
 
 console.log('╔═══════════════════════════════════════════╗')
 console.log('║       REQUEST COMPUTE — Requester         ║')
+console.log('╠═══════════════════════════════════════════╣')
+console.log(`║  ID: ${requesterId}              ║`)
 console.log('╚═══════════════════════════════════════════╝')
 console.log('')
-console.log('Searching for workers on the network...\n')
 
 // Track state
 const printedResults = new Set()
-const workers = new Map()
-const pendingJobs = new Map() // jobId -> { totalChunks, results: Map<chunkIndex, output>, joinFn }
+const workers = new Map() // writerKey -> { id, ts }
+const pendingJobs = new Map()
+const taskToJob = new Map()
+let pendingTaskCount = 0
 
-// Join the well-known discovery topic to find workers
+function findJobForTask (taskId) { return taskToJob.get(taskId) || null }
+
+// Advertise on NETWORK_TOPIC so workers can find us
 swarm.join(NETWORK_TOPIC, { client: true, server: true })
 
-swarm.on('connection', (conn, info) => {
-  // Send our autobase key so the worker can join
-  conn.write(JSON.stringify({ type: 'handshake', role: 'requester', autobaseKey }))
+// Periodically re-broadcast availability
+const broadcastConns = new Set()
+
+function broadcast () {
+  const msg = JSON.stringify({
+    type: 'advertise',
+    role: 'requester',
+    requesterId,
+    autobaseKey,
+    pendingTasks: pendingTaskCount,
+    workerCount: workers.size
+  })
+  for (const conn of broadcastConns) {
+    try { conn.write(msg) } catch {}
+  }
+}
+
+swarm.on('connection', (conn) => {
+  broadcastConns.add(conn)
+  conn.on('close', () => broadcastConns.delete(conn))
+  conn.on('error', () => broadcastConns.delete(conn))
+
+  // Send advertisement immediately
+  conn.write(JSON.stringify({
+    type: 'advertise',
+    role: 'requester',
+    requesterId,
+    autobaseKey,
+    pendingTasks: pendingTaskCount,
+    workerCount: workers.size
+  }))
 
   conn.on('data', async (data) => {
     try {
       const msg = JSON.parse(data.toString())
 
-      if (msg.type === 'handshake' && msg.role === 'worker') {
-        // Worker sent us their writer key — auto-authorize them
+      if (msg.type === 'join-request' && msg.role === 'worker') {
         const writerKey = msg.writerKey
         if (!workers.has(writerKey)) {
           workers.set(writerKey, { id: msg.workerId, ts: Date.now() })
-          await base.append({ type: 'add-writer', key: writerKey, by: 'requester', ts: Date.now() })
-          console.log(`[+] Worker discovered and authorized: ${msg.workerId}`)
+          await base.append({ type: 'add-writer', key: writerKey, by: requesterId, ts: Date.now() })
+          console.log(`[+] Worker joined: ${msg.workerId}`)
+          conn.write(JSON.stringify({ type: 'join-accepted', autobaseKey }))
           rl.prompt()
         }
       }
     } catch {}
   })
 
-  // Also replicate the autobase over this connection
+  // Replicate autobase
   base.replicate(conn)
 })
 
 await swarm.flush()
+console.log('Advertising on network, waiting for workers...\n')
 
-// Watch for results and worker announcements
+// Watch for results
 base.on('update', async () => {
   for (let i = 0; i < base.view.length; i++) {
     const entry = await base.view.get(i)
 
     if (entry.type === 'worker-available' && !workers.has(entry.key)) {
       workers.set(entry.key, { id: entry.by, ts: entry.ts })
-      console.log(`[+] Worker online: ${entry.by}`)
-      rl.prompt()
     }
 
     if (entry.type === 'result' && !printedResults.has(entry.taskId)) {
       printedResults.add(entry.taskId)
 
-      // Check if this result belongs to a distributed job
       const jobMatch = findJobForTask(entry.taskId)
       if (jobMatch) {
         const { jobId, chunkIndex } = jobMatch
@@ -74,7 +106,6 @@ base.on('update', async () => {
           console.log(`\n[<] Chunk ${chunkIndex + 1}/${job.totalChunks} done (by ${entry.by}, ${entry.elapsed || '?'}ms)`)
 
           if (job.results.size === job.totalChunks) {
-            // All chunks done — run join
             const errors = [...job.results.values()].filter(r => r && r.error)
             if (errors.length > 0) {
               console.log(`[!] Job ${jobId.slice(0, 8)}… had ${errors.length} failed chunks`)
@@ -84,42 +115,33 @@ base.on('update', async () => {
                 const final = job.joinFn(ordered)
                 console.log(`\n[*] JOB ${jobId.slice(0, 8)}… COMPLETE`)
                 const out = typeof final === 'string' ? final : JSON.stringify(final, null, 2)
-                if (out.length > 2000) {
-                  console.log(out.slice(0, 2000) + `… (${out.length} chars)`)
-                } else {
-                  console.log(out)
-                }
+                console.log(out.length > 2000 ? out.slice(0, 2000) + '…' : out)
               } catch (err) {
                 console.log(`[!] Join failed: ${err.message}`)
               }
             }
             pendingJobs.delete(jobId)
+            pendingTaskCount = Math.max(0, pendingTaskCount - job.totalChunks)
+            broadcast()
           }
           rl.prompt()
         }
       } else {
-        // Regular (non-job) result
         console.log(`\n[<] Result from ${entry.by} (task ${entry.taskId.slice(0, 8)}…)`)
         if (entry.error) {
           console.log(`    Error: ${entry.error}`)
         } else {
           const out = JSON.stringify(entry.output, null, 2)
-          if (out.length > 500) {
-            console.log(`    ${out.slice(0, 500)}… (${out.length} chars)`)
-          } else {
-            console.log(`    ${out}`)
-          }
+          console.log(out.length > 500 ? `    ${out.slice(0, 500)}…` : `    ${out}`)
         }
         if (entry.elapsed) console.log(`    (${entry.elapsed}ms)`)
+        pendingTaskCount = Math.max(0, pendingTaskCount - 1)
+        broadcast()
         rl.prompt()
       }
     }
   }
 })
-
-// Map taskId -> { jobId, chunkIndex } for distributed jobs
-const taskToJob = new Map()
-function findJobForTask (taskId) { return taskToJob.get(taskId) || null }
 
 // Interactive prompt
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -153,12 +175,14 @@ rl.on('line', async (line) => {
   if (input.startsWith('run ')) {
     const code = input.slice(4).trim()
     if (workers.size === 0) {
-      console.log('[!] No workers connected yet. Waiting for a worker to join...')
+      console.log('[!] No workers yet. Task queued — will run when a worker joins.')
     }
     const id = crypto.randomUUID()
+    pendingTaskCount++
+    broadcast()
     await base.append({
       type: 'task', id, code, argNames: [], args: [],
-      by: 'requester', ts: Date.now()
+      by: requesterId, ts: Date.now()
     })
     console.log(`[>] Task ${id.slice(0, 8)}… posted`)
 
@@ -181,10 +205,9 @@ rl.on('line', async (line) => {
       const computeCode = mod.compute.toString()
       const code = `const compute = ${computeCode}; return compute(chunk)`
 
-      // Round-robin assign chunks to available workers
       const workerIds = [...workers.values()].map(w => w.id)
       if (workerIds.length === 0) {
-        console.log('[!] No workers connected. Tasks will be unassigned (first worker takes all).')
+        console.log('[!] No workers connected. Tasks queued — will run when workers join.')
       }
 
       console.log(`[>] Job ${jobId.slice(0, 8)}… splitting into ${chunks.length} chunks across ${workerIds.length || '?'} worker(s)`)
@@ -195,6 +218,9 @@ rl.on('line', async (line) => {
         joinFn: mod.join
       })
 
+      pendingTaskCount += chunks.length
+      broadcast()
+
       for (let i = 0; i < chunks.length; i++) {
         const taskId = crypto.randomUUID()
         taskToJob.set(taskId, { jobId, chunkIndex: i })
@@ -203,7 +229,7 @@ rl.on('line', async (line) => {
           type: 'task', id: taskId, jobId, chunkIndex: i, totalChunks: chunks.length,
           code, argNames: ['chunk'], args: [chunks[i]],
           assignedTo,
-          by: 'requester', ts: Date.now()
+          by: requesterId, ts: Date.now()
         })
       }
       console.log(`[>] ${chunks.length} subtasks posted`)
@@ -217,12 +243,14 @@ rl.on('line', async (line) => {
     try {
       const code = fs.readFileSync(filePath, 'utf-8')
       if (workers.size === 0) {
-        console.log('[!] No workers connected yet. Task will be picked up when a worker joins.')
+        console.log('[!] No workers yet. Task queued.')
       }
       const id = crypto.randomUUID()
+      pendingTaskCount++
+      broadcast()
       await base.append({
         type: 'task', id, code, argNames: [], args: [],
-        by: 'requester', ts: Date.now()
+        by: requesterId, ts: Date.now()
       })
       console.log(`[>] Task from ${filePath} posted (${id.slice(0, 8)}…)`)
     } catch (err) {
@@ -254,6 +282,7 @@ rl.on('line', async (line) => {
   } else if (input === 'status') {
     console.log(`Autobase entries: ${base.view.length}`)
     console.log(`Workers: ${workers.size}`)
+    console.log(`Pending tasks: ${pendingTaskCount}`)
     console.log(`Results received: ${printedResults.size}`)
 
   } else if (input === 'help') {
