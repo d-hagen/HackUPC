@@ -104,17 +104,8 @@ discoverySwarm.on('connection', (conn) => {
   conn.on('close', () => broadcastConns.delete(conn))
   conn.on('error', () => broadcastConns.delete(conn))
 
-  // Send advertisement immediately
-  const rep = loadReputation()
-  conn.write(JSON.stringify({
-    type: 'advertise',
-    role: 'requester',
-    requesterId,
-    autobaseKey,
-    pendingTasks: pendingTaskCount,
-    reputation: { donated: rep.donated, consumed: rep.consumed, score: getScore(rep) },
-    workerCount: workers.size
-  }))
+  // Send advertisement immediately — reuse broadcast() so pendingRequires is always included
+  broadcast()
 
   conn.on('data', async (data) => {
     try {
