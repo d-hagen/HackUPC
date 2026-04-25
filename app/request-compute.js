@@ -7,9 +7,12 @@ import crypto from 'crypto'
 import fs from 'fs'
 import readline from 'readline'
 
+import { basename } from 'path'
+
 const requesterId = `requester-${crypto.randomUUID().slice(0, 8)}`
-const { base, swarm, cleanup } = await createBase('./store-requester', null)
+const { base, swarm, drive, cleanup } = await createBase('./store-requester', null)
 const autobaseKey = base.key.toString('hex')
+const driveKey = drive.key.toString('hex')
 
 console.log('╔═══════════════════════════════════════════╗')
 console.log('║       REQUEST COMPUTE — Requester         ║')
@@ -157,11 +160,13 @@ Commands:
   run <code>           Send JS code to execute
                          run return 2 + 2
                          run return Array.from({length:10}, (_,i) => i*i)
+                         Tasks with files get: readFile(path), listFiles(), writeFile(path, data)
   file <path.js>       Send a .js file as a single task
   job <path.js> [n]    Run a distributed job (split across n workers, default=all)
                          Job file exports: data, split(data,n), compute(chunk), join(results)
-                         Examples: job jobs/sum-job.js
-                                   job jobs/mandelbrot-job.js 4
+  upload <file> [name] Upload a file to the shared drive (available to workers)
+  files                List files on the shared drive
+  download <path>      Download a file from worker output
   workers              List connected workers
   results              Show all results
   status               Show network status
@@ -187,6 +192,7 @@ rl.on('line', async (line) => {
     broadcast()
     await base.append({
       type: 'task', id, code, argNames: [], args: [],
+      driveKey,
       by: requesterId, ts: Date.now()
     })
     addConsumed(1)
@@ -235,7 +241,7 @@ rl.on('line', async (line) => {
         await base.append({
           type: 'task', id: taskId, jobId, chunkIndex: i, totalChunks: chunks.length,
           code, argNames: ['chunk'], args: [chunks[i]],
-          assignedTo,
+          assignedTo, driveKey,
           by: requesterId, ts: Date.now()
         })
       }
@@ -259,7 +265,7 @@ rl.on('line', async (line) => {
       broadcast()
       await base.append({
         type: 'task', id, code, argNames: [], args: [],
-        by: requesterId, ts: Date.now()
+        driveKey, by: requesterId, ts: Date.now()
       })
       addConsumed(1)
       broadcast()
@@ -289,6 +295,66 @@ rl.on('line', async (line) => {
       }
     }
     if (count === 0) console.log('No results yet.')
+
+  } else if (input.startsWith('upload ')) {
+    const parts = input.slice(7).trim().split(/\s+/)
+    const localPath = parts[0]
+    const remoteName = parts[1] || '/' + basename(localPath)
+    const remotePath = remoteName.startsWith('/') ? remoteName : '/' + remoteName
+    try {
+      const data = fs.readFileSync(resolve(localPath))
+      await drive.put(remotePath, data)
+      console.log(`[+] Uploaded ${localPath} → ${remotePath} (${data.length} bytes)`)
+    } catch (err) {
+      console.log(`[!] Upload failed: ${err.message}`)
+    }
+
+  } else if (input === 'files') {
+    let count = 0
+    for await (const entry of drive.list('/')) {
+      console.log(`  ${entry.key} (${entry.value.blob.byteLength} bytes)`)
+      count++
+    }
+    if (count === 0) console.log('No files on drive.')
+
+  } else if (input.startsWith('download ')) {
+    const remotePath = input.slice(9).trim()
+    // Check worker result drives for the file
+    let found = false
+    for (let i = 0; i < base.view.length; i++) {
+      const entry = await base.view.get(i)
+      if (entry.type === 'result' && entry.driveKey && entry.outputFiles) {
+        if (entry.outputFiles.includes(remotePath)) {
+          try {
+            const workerDrive = new (await import('hyperdrive')).default(drive.corestore, Buffer.from(entry.driveKey, 'hex'))
+            await workerDrive.ready()
+            const data = await workerDrive.get(remotePath)
+            const localName = basename(remotePath)
+            fs.writeFileSync(localName, data)
+            console.log(`[+] Downloaded ${remotePath} → ./${localName} (${data.length} bytes)`)
+            found = true
+            break
+          } catch (err) {
+            console.log(`[!] Download failed: ${err.message}`)
+          }
+        }
+      }
+    }
+    if (!found) {
+      // Try own drive
+      try {
+        const data = await drive.get(remotePath)
+        if (data) {
+          const localName = basename(remotePath)
+          fs.writeFileSync(localName, data)
+          console.log(`[+] Downloaded ${remotePath} → ./${localName} (${data.length} bytes)`)
+        } else {
+          console.log(`[!] File not found: ${remotePath}`)
+        }
+      } catch {
+        console.log(`[!] File not found: ${remotePath}`)
+      }
+    }
 
   } else if (input === 'status') {
     const rep = loadReputation()

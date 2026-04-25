@@ -4,6 +4,7 @@ import Autobase from 'autobase'
 import Hyperswarm from 'hyperswarm'
 import crypto from 'crypto'
 import fs from 'fs'
+import Hyperdrive from 'hyperdrive'
 import { NETWORK_TOPIC } from './base-setup.js'
 import { executeTask } from './worker.js'
 import { addDonated, loadReputation, getScore } from './reputation.js'
@@ -45,6 +46,8 @@ let tasksDone = 0
 let totalTasksDone = 0
 const completed = new Set()
 const availableRequesters = new Map() // requesterId -> { autobaseKey, pendingTasks, conn, ts }
+const mountedDrives = new Map() // driveKey hex -> Hyperdrive instance
+let outputDrive = null // worker's own drive for output files
 let idleTimer = null
 let searching = true
 
@@ -106,12 +109,17 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   currentDiscoveryKey = base.discoveryKey
   const writerKey = base.local.key.toString('hex')
 
+  // Create output drive for file results
+  outputDrive = new Hyperdrive(store)
+  await outputDrive.ready()
+  mountedDrives.clear()
+
   // Request to join
   conn.write(JSON.stringify({
     type: 'join-request', role: 'worker', writerKey, workerId
   }))
 
-  // Replicate
+  // Replicate (Corestore replicates all cores including drives)
   base.replicate(conn)
   swarm.join(base.discoveryKey, { client: true, server: true })
 
@@ -152,13 +160,35 @@ async function processTasks () {
     const codePreview = entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
     console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview}`)
 
+    // Mount requester's drive if task has files
+    let inputDrive = null
+    if (entry.driveKey && store) {
+      if (!mountedDrives.has(entry.driveKey)) {
+        const d = new Hyperdrive(store, Buffer.from(entry.driveKey, 'hex'))
+        await d.ready()
+        mountedDrives.set(entry.driveKey, d)
+      }
+      inputDrive = mountedDrives.get(entry.driveKey)
+    }
+
     const t0 = performance.now()
     try {
-      const output = await executeTask(entry)
+      const output = await executeTask(entry, inputDrive, outputDrive)
       const elapsed = (performance.now() - t0).toFixed(2)
+
+      // Check if output files were written
+      const outputFiles = []
+      if (outputDrive) {
+        for await (const f of outputDrive.list('/')) {
+          outputFiles.push(f.key)
+        }
+      }
+
       await base.append({
         type: 'result', taskId: entry.id, output,
-        elapsed: Number(elapsed), by: workerId, ts: Date.now()
+        elapsed: Number(elapsed), by: workerId, ts: Date.now(),
+        driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
+        outputFiles: outputFiles.length > 0 ? outputFiles : undefined
       })
       tasksDone++
       totalTasksDone++

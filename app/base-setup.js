@@ -1,7 +1,8 @@
-// Shared Autobase + Hyperswarm setup
+// Shared Autobase + Hyperswarm + Hyperdrive setup
 import Corestore from 'corestore'
 import Autobase from 'autobase'
 import Hyperswarm from 'hyperswarm'
+import Hyperdrive from 'hyperdrive'
 import crypto from 'crypto'
 import fs from 'fs'
 
@@ -27,6 +28,10 @@ export async function createBase (storePath, key) {
   const base = new Autobase(store, baseKey, { valueEncoding: 'json', open, apply })
   await base.ready()
 
+  // Create a Hyperdrive on the same store for file transfer
+  const drive = new Hyperdrive(store)
+  await drive.ready()
+
   const BOOTSTRAP = process.env.BOOTSTRAP
   const swarmOpts = BOOTSTRAP
     ? { bootstrap: [{ host: BOOTSTRAP.split(':')[0], port: Number(BOOTSTRAP.split(':')[1]) }] }
@@ -35,8 +40,16 @@ export async function createBase (storePath, key) {
 
   const cleanup = async () => {
     await swarm.destroy()
+    await drive.close()
     await base.close()
   }
 
-  return { base, swarm, store, cleanup, open, apply }
+  return { base, swarm, store, drive, cleanup }
+}
+
+// Create a Hyperdrive from a Corestore, optionally from a remote key
+export async function createDrive (store, key) {
+  const drive = key ? new Hyperdrive(store, key) : new Hyperdrive(store)
+  await drive.ready()
+  return drive
 }
