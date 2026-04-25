@@ -8,6 +8,7 @@ import { NETWORK_TOPIC } from './base-setup.js'
 import { executeTask } from './worker.js'
 
 const workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
+const storePath = `./store-${workerId}`
 const IDLE_TIMEOUT = 15000 // leave after 15s with no tasks
 
 console.log('╔═══════════════════════════════════════════╗')
@@ -16,7 +17,7 @@ console.log('╠═════════════════════�
 console.log(`║  Worker ID: ${workerId}                ║`)
 console.log('╚═══════════════════════════════════════════╝')
 console.log('')
-console.log(`Idle timeout: ${IDLE_TIMEOUT / 1000}s (leaves requester if no tasks)\n`)
+console.log(`Idle timeout: ${IDLE_TIMEOUT / 1000}s | Store: ${storePath}\n`)
 
 const BOOTSTRAP = process.env.BOOTSTRAP
 const swarmOpts = BOOTSTRAP
@@ -38,6 +39,7 @@ async function apply (nodes, view, b) {
 let base = null
 let store = null
 let currentRequester = null
+let currentDiscoveryKey = null
 let tasksDone = 0
 let totalTasksDone = 0
 const completed = new Set()
@@ -48,7 +50,7 @@ let searching = true
 function resetIdleTimer () {
   if (idleTimer) clearTimeout(idleTimer)
   idleTimer = setTimeout(() => {
-    if (base && searching === false) {
+    if (base && !searching) {
       console.log(`[~] Idle for ${IDLE_TIMEOUT / 1000}s, leaving ${currentRequester}…`)
       leaveCurrentRequester()
     }
@@ -56,15 +58,32 @@ function resetIdleTimer () {
 }
 
 async function leaveCurrentRequester () {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+
+  const leavingId = currentRequester
+
+  // Leave old autobase discovery topic
+  if (currentDiscoveryKey) {
+    swarm.leave(currentDiscoveryKey)
+    currentDiscoveryKey = null
+  }
+
+  // Close old base
   if (base) {
-    console.log(`[~] Disconnecting from ${currentRequester} (completed ${tasksDone} tasks)\n`)
+    try { await base.close() } catch {}
     base = null
     store = null
-    currentRequester = null
-    tasksDone = 0
-    completed.clear()
   }
+
+  // Remove from pool so we don't rejoin immediately
+  if (leavingId) availableRequesters.delete(leavingId)
+
+  console.log(`[~] Left ${leavingId || 'unknown'} (${tasksDone} tasks done)\n`)
+  currentRequester = null
+  tasksDone = 0
+  completed.clear()
   searching = true
+
   console.log('Searching for requesters with tasks...\n')
   pickBestRequester()
 }
@@ -76,13 +95,14 @@ async function joinRequester (requesterId, autobaseKey, conn) {
 
   console.log(`[~] Joining ${requesterId}…`)
 
-  fs.rmSync('./store-worker', { recursive: true, force: true })
-  store = new Corestore('./store-worker')
+  fs.rmSync(storePath, { recursive: true, force: true })
+  store = new Corestore(storePath)
   base = new Autobase(store, Buffer.from(autobaseKey, 'hex'), {
     valueEncoding: 'json', open, apply
   })
   await base.ready()
 
+  currentDiscoveryKey = base.discoveryKey
   const writerKey = base.local.key.toString('hex')
 
   // Request to join
@@ -108,6 +128,8 @@ async function joinRequester (requesterId, autobaseKey, conn) {
 async function processTasks () {
   if (!base || !base.writable) return
 
+  let didWork = false
+
   for (let i = 0; i < base.view.length; i++) {
     const entry = await base.view.get(i)
     if (entry.type !== 'task' || completed.has(entry.id)) continue
@@ -123,7 +145,8 @@ async function processTasks () {
     if (hasResult) { completed.add(entry.id); continue }
 
     completed.add(entry.id)
-    resetIdleTimer() // got work, reset idle
+    didWork = true
+    resetIdleTimer()
 
     const codePreview = entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
     console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview}`)
@@ -149,22 +172,52 @@ async function processTasks () {
       console.log(`[!] Error: ${err.message}\n`)
     }
   }
+
+  // If we did work and there's nothing left, check for other requesters immediately
+  if (didWork) {
+    let hasRemainingTasks = false
+    for (let i = 0; i < base.view.length; i++) {
+      const entry = await base.view.get(i)
+      if (entry.type !== 'task' || !entry.code) continue
+      if (entry.assignedTo && entry.assignedTo !== workerId) continue
+      if (completed.has(entry.id)) continue
+      hasRemainingTasks = true
+      break
+    }
+
+    if (!hasRemainingTasks) {
+      // Check if another requester has tasks waiting
+      let betterOption = false
+      for (const [id, info] of availableRequesters) {
+        if (id !== currentRequester && info.pendingTasks > 0 && Date.now() - info.ts < 30000) {
+          betterOption = true
+          break
+        }
+      }
+      if (betterOption) {
+        console.log('[~] All tasks done here, another requester has work — moving on')
+        leaveCurrentRequester()
+      }
+    }
+  }
 }
 
 function pickBestRequester () {
   if (!searching) return
 
-  // Pick the requester with the most pending tasks
   let best = null
-  let bestTasks = -1
+  let bestTasks = 0 // only pick requesters with > 0 tasks
+
   for (const [id, info] of availableRequesters) {
+    // Skip stale advertisements (> 30s old)
+    if (Date.now() - info.ts > 30000) continue
     if (info.pendingTasks > bestTasks) {
       best = id
       bestTasks = info.pendingTasks
     }
   }
 
-  if (best && bestTasks > 0) {
+  if (best) {
     const info = availableRequesters.get(best)
     console.log(`[~] Found ${best} with ${info.pendingTasks} pending task(s)`)
     joinRequester(best, info.autobaseKey, info.conn)
@@ -214,7 +267,7 @@ swarm.on('connection', (conn) => {
 await swarm.flush()
 console.log('Listening for requesters on network...\n')
 
-// If no requester found yet, periodically check
+// Periodically check for requesters if searching
 setInterval(() => {
   if (searching) pickBestRequester()
 }, 5000)
@@ -223,6 +276,7 @@ process.on('SIGINT', async () => {
   console.log(`\nShutting down… (${totalTasksDone} tasks completed total)`)
   if (idleTimer) clearTimeout(idleTimer)
   await swarm.destroy()
-  if (base) await base.close()
+  if (base) try { await base.close() } catch {}
+  fs.rmSync(storePath, { recursive: true, force: true })
   process.exit()
 })
