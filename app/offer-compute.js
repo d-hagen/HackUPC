@@ -202,6 +202,12 @@ async function processTasks () {
         mountedDrives.set(entry.driveKey, d)
       }
       inputDrive = mountedDrives.get(entry.driveKey)
+      // Wait for drive data to sync from requester (Autobase replicates faster than Hyperdrive)
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await inputDrive.update()
+        if (inputDrive.version > 0) break
+        await new Promise(r => setTimeout(r, 500))
+      }
     }
 
     const t0 = performance.now()
