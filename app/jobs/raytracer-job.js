@@ -5,8 +5,8 @@ export const outputFile = 'render.ppm'
 export const data = {
   width: 800,
   height: 600,
-  samplesPerPixel: 64,
-  maxDepth: 10
+  samplesPerPixel: 256,
+  maxDepth: 12
 }
 
 export function split (data, n) {
@@ -27,22 +27,32 @@ export function compute (chunk) {
   // --- Scene ---
   const spheres = [
     // ground
-    { cx: 0, cy: -100.5, cz: -1, r: 100, color: [0.5, 0.8, 0.4], type: 'diffuse' },
-    // center glass-like
-    { cx: 0, cy: 0, cz: -1, r: 0.5, color: [0.8, 0.8, 1.0], type: 'diffuse' },
-    // left metal
-    { cx: -1.1, cy: 0, cz: -1, r: 0.5, color: [0.8, 0.6, 0.2], type: 'metal', fuzz: 0.3 },
-    // right metal
-    { cx: 1.1, cy: 0, cz: -1, r: 0.5, color: [0.7, 0.3, 0.3], type: 'metal', fuzz: 0.0 },
-    // small top
-    { cx: 0, cy: 1.0, cz: -1.5, r: 0.3, color: [0.9, 0.7, 0.2], type: 'diffuse' }
+    { cx: 0, cy: -1000, cz: 0, r: 1000, color: [0.5, 0.5, 0.5], type: 'diffuse' },
+    // large center diffuse
+    { cx: 0, cy: 1, cz: 0, r: 1.0, color: [0.8, 0.8, 0.9], type: 'diffuse' },
+    // large left metal (gold)
+    { cx: -3, cy: 1, cz: 0, r: 1.0, color: [0.8, 0.6, 0.2], type: 'metal', fuzz: 0.05 },
+    // large right metal (silver mirror)
+    { cx: 3, cy: 1, cz: 0, r: 1.0, color: [0.9, 0.9, 0.9], type: 'metal', fuzz: 0.0 },
+    // small scattered balls
+    { cx: -1.5, cy: 0.3, cz: 1.5, r: 0.3, color: [0.9, 0.2, 0.2], type: 'diffuse' },
+    { cx: 0, cy: 0.3, cz: 1.5, r: 0.3, color: [0.2, 0.8, 0.3], type: 'diffuse' },
+    { cx: 1.5, cy: 0.3, cz: 1.5, r: 0.3, color: [0.2, 0.4, 0.9], type: 'diffuse' },
+    { cx: -2.5, cy: 0.25, cz: 2.5, r: 0.25, color: [0.9, 0.7, 0.1], type: 'metal', fuzz: 0.2 },
+    { cx: 2.5, cy: 0.25, cz: 2.5, r: 0.25, color: [0.6, 0.2, 0.8], type: 'diffuse' },
+    { cx: 1, cy: 0.2, cz: 2.8, r: 0.2, color: [0.95, 0.95, 0.5], type: 'metal', fuzz: 0.0 },
+    { cx: -1, cy: 0.2, cz: 2.8, r: 0.2, color: [0.3, 0.9, 0.9], type: 'diffuse' },
+    { cx: 0.5, cy: 0.15, cz: -1.5, r: 0.15, color: [1.0, 0.4, 0.1], type: 'metal', fuzz: 0.1 },
+    { cx: -0.5, cy: 0.15, cz: -1.5, r: 0.15, color: [0.5, 0.5, 1.0], type: 'diffuse' },
+    { cx: 2, cy: 0.2, cz: -1, r: 0.2, color: [0.8, 0.3, 0.5], type: 'metal', fuzz: 0.3 },
+    { cx: -2, cy: 0.2, cz: -1, r: 0.2, color: [0.4, 0.8, 0.4], type: 'diffuse' },
   ]
 
   // --- Camera ---
-  const camOrigin = [0, 0.5, 2]
-  const camTarget = [0, 0, -1]
+  const camOrigin = [0, 2.5, 9]
+  const camTarget = [0, 0.5, 0]
   const up = [0, 1, 0]
-  const fov = Math.PI / 4
+  const fov = Math.PI / 5
 
   const vlen = (v) => Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
   const norm = (v) => { const l = vlen(v); return [v[0] / l, v[1] / l, v[2] / l] }
