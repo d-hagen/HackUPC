@@ -638,9 +638,6 @@ rl.on('line', async (line) => {
         if (previewServer) previewServer.dag({ tasks: dagTasks, N: dagMeta.N })
       }
 
-      // Whether any chunk has deps — if so, don't round-robin assign (let workers self-select)
-      const hasAnyDeps = chunks.some(c => c.dependsOn && c.dependsOn.length > 0)
-
       pendingJobs.set(jobId, {
         totalChunks: chunks.length,
         results: new Map(),
@@ -657,13 +654,9 @@ rl.on('line', async (line) => {
         const taskId = chunkTaskIds[i]
         taskToJob.set(taskId, { jobId, chunkIndex: i })
 
-        // DAG jobs: no assignedTo — workers self-select based on dep availability
-        // Non-DAG jobs: round-robin for load distribution
-        const assignedTo = hasAnyDeps
-          ? null
-          : (jobRequires
-              ? pickWorkerForTask(jobRequires, workers)
-              : (workerIds.length > 0 ? workerIds[i % workerIds.length] : null))
+        // Workers self-select tasks — no round-robin assignment
+        // This lets each worker's thread pool grab multiple tasks concurrently
+        const assignedTo = jobRequires ? pickWorkerForTask(jobRequires, workers) : null
 
         const chunk = chunks[i]
 
