@@ -65,13 +65,6 @@ Or use the **web dashboard** — schedule jobs, monitor tasks, and view live pre
 | Dependency bundling | esbuild (auto-inlined) | Manual packaging | Docker containers | N/A |
 | Hardware routing | Auto-detect GPU/CPU/RAM | Manual project selection | Provider profiles | Manual selection |
 
-### Why This Matters for Pear/Holepunch
-
-Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password manager) — both are data sync and storage. PeerCompute proves the Pear stack can do something entirely new: **distributed computation**.
-
-- **New category for the platform.** Autobase was built for syncing documents. We show it works as a job scheduler — tasks, claims, results, reputation, all in the same append-only log. This expands what developers think Pear is for.
-- **"The Cloud does not exist" taken further.** Pear's slogan is about eliminating servers for data. PeerCompute eliminates servers for compute too. The full vision: storage, communication, AND computation — all P2P on one protocol stack.
-- **Zero-infrastructure pitch.** If Pear wants to attract enterprise or developer adoption beyond chat apps, "P2P compute with zero setup" is a compelling story that no other platform can tell this simply.
 
 ---
 
