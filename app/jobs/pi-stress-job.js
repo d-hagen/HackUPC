@@ -1,6 +1,14 @@
-// Monte Carlo Pi estimation — CPU-heavy job that takes ~4 minutes total
-// Compute is async and yields periodically so replication + streaming work
-// Usage: job jobs/pi-stress-job.js
+// ─── Monte Carlo π Estimation (CPU Stress) ───────────────────────────────────
+// Estimates π via random sampling: count points inside unit circle / total.
+// CPU-heavy — good for benchmarking parallel speedup across N workers.
+// Each worker independently samples its share, requester averages results.
+//
+// Usage (from requester prompt):
+//   job jobs/pi-stress-job.js 4     → split across 4 workers
+//   job jobs/pi-stress-job.js [n]
+//
+// No external dependencies. Works on any worker.
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const data = { totalSamples: 10_000_000_000 }
 

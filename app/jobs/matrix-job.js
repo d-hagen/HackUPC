@@ -1,14 +1,18 @@
-// Distributed matrix multiplication: C = A × B
+// ─── Distributed Matrix Multiplication ───────────────────────────────────────
+// Computes C = A × B by splitting rows of A across workers. Each worker reads
+// both matrices from the shared Hyperdrive, multiplies its assigned rows, and
+// returns results. Demonstrates P2P file sharing via Hyperdrive.
 //
-// Prerequisites:
-//   1. Generate matrices:  node jobs/gen-matrices.js [size]
-//   2. Upload to Hyperdrive in requester prompt:
-//        upload matrix-a.json
-//        upload matrix-b.json
-//   3. Run:  job jobs/matrix-job.js [n]
+// Setup (run once from app/ directory):
+//   node jobs/gen-matrices.js 500     → generates matrix-a.json, matrix-b.json
 //
-// Each worker reads the full matrices from Hyperdrive, multiplies its
-// assigned rows of A by all of B, and returns the result rows.
+// Usage (from requester prompt):
+//   upload matrix-a.json
+//   upload matrix-b.json
+//   job jobs/matrix-job.js 4          → 4 workers each multiply their row block
+//
+// No external dependencies beyond the generated matrix files.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import { readFileSync } from 'fs'
 

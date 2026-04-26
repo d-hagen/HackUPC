@@ -1,4 +1,14 @@
-// Find all primes up to a limit by splitting the range across workers
+// ─── Prime Sieve ─────────────────────────────────────────────────────────────
+// Finds all primes up to a limit by splitting the number range across workers.
+// Simple embarrassingly parallel job — good "hello world" for new workers.
+// join() merges sorted prime lists from each range.
+//
+// Usage (from requester prompt):
+//   job jobs/primes-job.js 4     → 4 workers each sieve their range
+//   job jobs/primes-job.js [n]
+//
+// No external dependencies. Works on any worker.
+// ─────────────────────────────────────────────────────────────────────────────
 export const data = { limit: 10000 }
 
 export function split (data, n) {

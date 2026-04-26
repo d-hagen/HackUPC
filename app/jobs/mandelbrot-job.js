@@ -1,4 +1,14 @@
-// Render a Mandelbrot set by splitting into tile rows across workers
+// ─── Mandelbrot Set (ASCII) ───────────────────────────────────────────────────
+// Renders the Mandelbrot set by splitting rows across workers. Each worker
+// computes escape-time iterations for its strip independently (embarrassingly
+// parallel). join() assembles into a terminal ASCII art image.
+//
+// Usage (from requester prompt):
+//   job jobs/mandelbrot-job.js 4     → 4 strips
+//   job jobs/mandelbrot-job.js [n]
+//
+// No external dependencies. Works on any worker.
+// ─────────────────────────────────────────────────────────────────────────────
 export const data = {
   width: 128, height: 128, maxIter: 200,
   realMin: -2.5, realMax: 1, imagMin: -1.25, imagMax: 1.25
