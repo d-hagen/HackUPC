@@ -1,17 +1,18 @@
-// GPU ray tracer job — distributed rendering using PyTorch on workers.
-// Each chunk is a horizontal strip. Workers with PyTorch render on GPU (CUDA/MPS).
-// Falls back to CPU if PyTorch unavailable.
-// Result includes 'device' field — requester tints GPU-rendered tiles purple in preview.
+// ─── GPU Ray Tracer ───────────────────────────────────────────────────────────
+// Distributed path tracer rendered on workers' GPUs via PyTorch.
+// All pixels in a strip computed in parallel as tensors (CUDA/MPS/CPU fallback).
+// gpu-raytracer.py is uploaded to Hyperdrive at job start and fetched by workers.
+// GPU-rendered strips appear with a purple tint in the live preview so you can
+// see which worker used hardware acceleration.
 //
-// Usage: job jobs/gpu-raytracer-job.js [strips] [width] [height] [spp] [depth]
-//   strips  number of horizontal strips (default: workers count or 4)
-//   width   image width  (default 800)
-//   height  image height (default 600)
-//   spp     samples per pixel (default 32 — increase for quality, GPU ~10x faster)
-//   depth   max bounce depth (default 8)
+// ~10x faster than the JS raytracer on MPS/CUDA at spp≥32.
 //
-// Requires PyTorch on workers for GPU acceleration.
-// Falls back to slow CPU Python path if no PyTorch.
+// Usage (from requester prompt):
+//   job jobs/gpu-raytracer-job.js 8              → 8 strips, 800×600, spp=32
+//   job jobs/gpu-raytracer-job.js [strips] [width] [height] [spp] [depth]
+//
+// Requires: PyTorch on workers (auto-routed; falls back to slow CPU Python)
+// ─────────────────────────────────────────────────────────────────────────────
 
 import fs from 'fs'
 import { execSync } from 'child_process'

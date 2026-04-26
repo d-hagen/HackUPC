@@ -1,5 +1,14 @@
-// Distributed ray tracer: each worker renders a horizontal strip
-// join() assembles strips into a PPM file (open with Preview on macOS)
+// ─── Distributed Ray Tracer ──────────────────────────────────────────────────
+// CPU path tracer written in pure JS. Splits the image into strips (or a 2D
+// grid), each rendered independently on a worker thread. Progressive live
+// preview updates as strips arrive. Higher spp = better quality, longer render.
+//
+// Usage (from requester prompt):
+//   job jobs/raytracer-job.js 8          → 8 horizontal strips
+//   job jobs/raytracer-job.js 4 4        → 4×4 = 16 grid blocks (faster preview)
+//
+// No external dependencies. Works on any worker.
+// ─────────────────────────────────────────────────────────────────────────────
 export const outputFile = 'render.ppm'
 
 export const data = {

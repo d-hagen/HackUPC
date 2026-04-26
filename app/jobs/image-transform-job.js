@@ -1,8 +1,15 @@
-// Distributed image transformation: each worker applies a different filter to its block
-// Usage:
-//   job jobs/image-transform-job.js 4        → 4 horizontal strips
-//   job jobs/image-transform-job.js 2 3      → 2 rows × 3 cols = 6 grid blocks
-// Requires: img.png in app/ directory, ImageMagick installed on requester
+// ─── Distributed Image Transform ────────────────────────────────────────────
+// Loads img.png, splits into a grid of blocks, each block gets a different
+// visual filter (grayscale, sepia, invert, warm, cool, posterize, edge,
+// contrast). Workers execute blocks in parallel — live preview updates as
+// blocks arrive.
+//
+// Usage (from requester prompt):
+//   job jobs/image-transform-job.js 4      → 4 horizontal strips
+//   job jobs/image-transform-job.js 2 3    → 2×3 = 6 grid blocks
+//
+// Requires: img.png in app/ directory, ImageMagick on requester
+// ─────────────────────────────────────────────────────────────────────────────
 import fs from 'fs'
 import { execSync } from 'child_process'
 

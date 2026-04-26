@@ -1,9 +1,15 @@
-// GPU-accelerated image blur via PyTorch on workers.
-// Each strip is a JS task that fetches gpu-blur.py from the shared drive,
-// writes it to /tmp, and runs python3 on it with pixel data via stdin.
-// Works without ALLOW_SHELL — uses Node child_process inside AsyncFunction.
+// ─── GPU Image Blur ───────────────────────────────────────────────────────────
+// Loads img.png, splits into horizontal strips, blurs each strip using PyTorch
+// Gaussian convolution on the worker's GPU (CUDA/MPS) or CPU fallback.
+// The Python script (gpu-blur.py) is uploaded to Hyperdrive and fetched by
+// workers at runtime — no pre-install needed beyond PyTorch.
 //
-// Usage: job jobs/gpu-blur-job.js [n]
+// Usage (from requester prompt):
+//   job jobs/gpu-blur-job.js 4     → 4 strips
+//   job jobs/gpu-blur-job.js [n]
+//
+// Requires: img.png in app/, PyTorch on workers (auto-routed via capabilities)
+// ─────────────────────────────────────────────────────────────────────────────
 import fs from 'fs'
 import { execSync } from 'child_process'
 import { resolve, dirname } from 'path'

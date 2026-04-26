@@ -1,18 +1,18 @@
-// Jacobi iterative solver demo — distributed with dependency graph
+// ─── Jacobi Solver (Barrier DAG) ─────────────────────────────────────────────
+// Distributed iterative PDE solver (Laplace equation ∇²u=0) on a 2D grid.
+// Each Jacobi iteration is fully parallel: all N strips run concurrently,
+// but iteration k+1 cannot start until ALL strips from iteration k are done
+// — this is a "barrier" dependency pattern in the task DAG.
 //
-// Solves Laplace equation on a 2D grid: ∇²u = 0
-// Boundary: top=100, bottom=0, left=0, right=0
+// Output: heatmap PPM showing the converged temperature field.
+// Live preview updates each time a strip result arrives.
 //
-// Each Jacobi iteration k: each cell = average of 4 neighbors from iteration k-1
-// This is embarrassingly parallel per iteration — all N strips can run in parallel
-// But iteration k depends on ALL results from iteration k-1 → dependency graph
+// Usage (from requester prompt):
+//   job jobs/jacobi-job.js 4     → 4 strips, default iterations
+//   job jobs/jacobi-job.js [n]
 //
-// Dependency graph structure:
-//   iter 0, strip 0..N-1: no deps (initial state)
-//   iter 1, strip i: dependsOn [all N tasks from iter 0]
-//   iter k, strip i: dependsOn [all N tasks from iter k-1]
-//
-// Usage: job jobs/jacobi-job.js [workers]
+// No external dependencies. Works on any worker.
+// ─────────────────────────────────────────────────────────────────────────────
 // Visualization: outputs a PPM heatmap showing convergence
 
 export const outputFile = 'jacobi.ppm'

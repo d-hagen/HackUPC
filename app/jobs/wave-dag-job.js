@@ -1,17 +1,17 @@
-// Wave-front DAG demo
+// ─── Wave-front DAG Demo ──────────────────────────────────────────────────────
+// NxN grid of tasks with top+left dependencies — demonstrates DAG execution.
+// Task (r,c) depends on (r-1,c) and (r,c-1). Tasks on each anti-diagonal
+// (row+col=k) are fully independent and run in parallel, creating a visible
+// wave propagating from top-left to bottom-right.
 //
-// NxN grid of tasks. Task (r,c) depends on (r-1,c) [top] and (r,c-1) [left].
-// This creates a diagonal wavefront of execution: tasks on anti-diagonal
-// row+col=k are all independent and can run in parallel.
+// Output: color heatmap (blue→green→red by wavefront distance) + live DAG
+// visualization panel showing node states (blocked/ready/done) with arrows.
 //
-// Compute: value = max(top_val, left_val) + 1  (wavefront distance from corner)
-// Color:   blue (corner, dist=1) → green → red (far corner, dist=2*(N-1))
-// Each task sleeps a random delay so you can watch the wave propagate.
-//
-// Usage: job jobs/wave-dag-job.js [N] [cellSize] [delayMs]
-//   N        grid size (default 6)
-//   cellSize pixels per cell in the preview image (default 80)
-//   delayMs  base delay per task in ms (default 250)
+// Usage (from requester prompt):
+//   job jobs/wave-dag-job.js              → 6×6 grid, 80px cells, 250ms delay
+//   job jobs/wave-dag-job.js 8 60 150     → 8×8 grid, 60px cells, 150ms delay
+//   job jobs/wave-dag-job.js [N] [cellSize] [delayMs]
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const outputFile = 'wave-dag.ppm'
 export const dagLayout = 'grid'  // tells preview server to render DAG panel

@@ -1,18 +1,18 @@
-// Gauss-Seidel iterative solver demo — sequential dependencies within each sweep
+// ─── Gauss-Seidel Solver (Chain DAG) ─────────────────────────────────────────
+// Distributed iterative PDE solver — sequential variant of Jacobi.
+// Each strip uses the UPDATED values from the previous strip in the same
+// iteration, creating a strict chain: strip0→strip1→strip2→...
+// Converges in ~half the iterations of Jacobi, but only one strip runs at a time.
+// Contrasts with jacobi-job.js to demonstrate different DAG dependency shapes.
 //
-// Unlike Jacobi (fully parallel per iteration), Gauss-Seidel requires
-// cell i to use UPDATED values from the current sweep when computing cell i+1.
-// This creates a chain dependency within each iteration:
-//   strip 0 → strip 1 → strip 2 → strip 3 (within same iter)
+// Output: heatmap PPM showing the converged temperature field.
 //
-// DAG structure:
-//   iter 0: strip 0 (no deps) → strip 1 (deps: strip 0) → strip 2 (deps: strip 1) → ...
-//   iter 1: strip 0 (deps: iter0.strip3) → strip 1 (deps: iter1.strip0) → ...
+// Usage (from requester prompt):
+//   job jobs/gauss-seidel-job.js 4     → 4 strips, default iterations
+//   job jobs/gauss-seidel-job.js [n]
 //
-// This shows SEQUENTIAL dependencies — only one strip can run at a time per iter.
-// Slower than Jacobi but converges in ~half the iterations.
-//
-// Usage: job jobs/gauss-seidel-job.js [workers]
+// No external dependencies. Works on any worker.
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const outputFile = 'gauss-seidel.ppm'
 

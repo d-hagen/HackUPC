@@ -598,16 +598,6 @@ rl.on('line', async (line) => {
         console.log('[!] No workers connected. Tasks queued — will run when workers join.')
       }
 
-      // If job exports transforms[], assign one per worker so each machine applies a different filter
-      if (mod.transforms && workerIds.length > 0) {
-        const workerTransform = new Map()
-        workerIds.forEach((id, i) => workerTransform.set(id, mod.transforms[i % mod.transforms.length]))
-        chunks = chunks.map((chunk, i) => {
-          const assignedWorker = workerIds[i % workerIds.length]
-          return { ...chunk, transform: workerTransform.get(assignedWorker) }
-        })
-      }
-
       // Shuffle chunk order so blocks don't appear strictly top-to-bottom
       const chunkOrder = Array.from({ length: chunks.length }, (_, i) => i)
       for (let i = chunkOrder.length - 1; i > 0; i--) {
