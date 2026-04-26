@@ -335,6 +335,7 @@ body {
 .stat-value { font-weight: 600; font-family: var(--mono); }
 .stat-value.green { color: var(--green); }
 .stat-value.accent { color: var(--accent2); }
+.stat-value.mono { font-size: 11px; color: var(--text2); word-break: break-all; }
 
 /* ── Peer graph ── */
 #peer-graph {

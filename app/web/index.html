@@ -67,6 +67,7 @@
     <!-- Stats (hidden until launched) -->
     <div class="sidebar-section" id="req-stats-section" style="display:none">
       <div class="section-title">Stats</div>
+      <div class="stat-row"><span class="stat-label">Requester ID</span><span class="stat-value mono" id="stat-req-id">&mdash;</span></div>
       <div class="stat-row"><span class="stat-label">Workers</span><span class="stat-value accent" id="stat-workers">0</span></div>
       <div class="stat-row"><span class="stat-label">Pending tasks</span><span class="stat-value" id="stat-pending">0</span></div>
       <div class="stat-row"><span class="stat-label">Results</span><span class="stat-value green" id="stat-results">0</span></div>
@@ -183,6 +184,10 @@
           <div class="schedule-heading-inline">
             <span class="setting-label">Chunks (workers)</span>
             <input class="setting-num" type="number" id="schedule-chunks" min="1" max="128" placeholder="auto" style="width:70px" />
+          </div>
+          <div class="schedule-heading-inline" style="margin-top:8px">
+            <span class="setting-label">Job arguments</span>
+            <input type="text" id="schedule-args" class="input-path" placeholder="e.g. 512 512 (passed to split)" style="width:160px" />
           </div>
         </div>
 

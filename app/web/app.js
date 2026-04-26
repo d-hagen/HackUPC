@@ -21,6 +21,7 @@ const state = {
   jobs: new Map(),
   requesterLaunched: false,
   workerLaunched: false,
+  requesterId: null,
   taskFilter: 'queue',
   workerCaps: null,
   workerStatus: { searching: true, currentRequester: null, totalTasksDone: 0 },
@@ -231,6 +232,7 @@ function handleMsg (msg) {
       if (payload.state) {
         state.requesterLaunched = payload.state.requesterLaunched
         state.workerLaunched = payload.state.workerLaunched
+        state.requesterId = payload.state.requesterId || null
         state.workers = payload.state.workers || []
         state.workerStatus = payload.state.workerStatus || state.workerStatus
         state.workerCaps = payload.state.workerCaps
@@ -247,8 +249,17 @@ function handleMsg (msg) {
       }
       break
 
+    case 'requester-id':
+      state.requesterId = payload.requesterId
+      $('stat-req-id').textContent = payload.requesterId || '-'
+      break
+
     case 'requester-ready':
       state.requesterLaunched = true
+      if (payload.requesterId) {
+        state.requesterId = payload.requesterId
+        $('stat-req-id').textContent = payload.requesterId
+      }
       $('net-dot').className = 'dot online'
       $('net-label').textContent = 'Online'
       $('req-stats-section').style.display = ''
@@ -380,6 +391,7 @@ function handleMsg (msg) {
 
     case 'requester-stopped':
       state.requesterLaunched = false
+      state.requesterId = null
       state.workers = []
       $('btn-launch-requester').style.display = ''
       $('btn-launch-requester').textContent = '▶ Start Request'
@@ -432,6 +444,7 @@ function syncUIState () {
     $('net-dot').className = 'dot online'
     $('net-label').textContent = 'Online'
     $('stat-workers').textContent = state.workers.length
+    if (state.requesterId) $('stat-req-id').textContent = state.requesterId
     renderWorkers()
     renderGraph()
     renderTaskList()
@@ -754,10 +767,12 @@ $('btn-run-script').addEventListener('click', async () => {
   if (!state.scheduleScriptName) { showToast('Select a script first', 'error'); return }
   if (!state.requesterLaunched) { showToast('Start the requester first', 'error'); return }
   const chunks = $('schedule-chunks').value ? parseInt($('schedule-chunks').value) : null
+  const argsRaw = $('schedule-args').value.trim()
+  const extraArgs = argsRaw ? argsRaw.split(/\s+/) : []
   const result = await fetch('/api/run-job', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ script: state.scheduleScriptName, chunks })
+    body: JSON.stringify({ script: state.scheduleScriptName, chunks, extraArgs })
   }).then(r => r.json())
   if (result.ok) {
     showToast('Job submitted!', 'success')
@@ -781,6 +796,7 @@ $('btn-clear-all').addEventListener('click', () => {
   renderDataFileList()
   $('btn-remove-script').click()
   $('schedule-chunks').value = ''
+  $('schedule-args').value = ''
   updateScheduleButtons()
   showToast('Schedule cleared')
 })

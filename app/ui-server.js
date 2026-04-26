@@ -29,6 +29,7 @@ const sseClients = new Set()
 const state = {
   requesterLaunched: false,
   workerLaunched: false,
+  requesterId: null,
   workers: [],
   pendingTasks: 0,
   resultsReceived: 0,
@@ -223,8 +224,18 @@ function parseRequesterLine (line) {
     return
   }
 
+  if (s.includes('ID:') && s.includes('requester-')) {
+    const match = s.match(/(requester-\S+)/)
+    if (match) {
+      state.requesterId = match[1]
+      broadcast('requester-id', { requesterId: match[1] })
+    }
+    addLog('requester', s, 'info')
+    return
+  }
+
   if (s.includes('DHT bootstrap complete')) {
-    broadcast('requester-ready', { status: 'online' })
+    broadcast('requester-ready', { status: 'online', requesterId: state.requesterId })
     addLog('requester', s, 'success')
     return
   }
@@ -374,6 +385,7 @@ function startRequester (opts = {}) {
   if (opts.bootstrapNode) env.BOOTSTRAP = opts.bootstrapNode
 
   state.requesterLaunched = true
+  state.requesterId = null
   state.workers = []
   state.pendingTasks = 0
   state.resultsReceived = 0
@@ -668,7 +680,9 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Requester not running' }))
       return
     }
-    const cmd = chunks ? `job jobs/${safeName} ${chunks}` : `job jobs/${safeName}`
+    const extraArgs = Array.isArray(body.extraArgs) ? body.extraArgs.filter(a => a !== '').join(' ') : ''
+    const argStr = [chunks, extraArgs].filter(Boolean).join(' ')
+    const cmd = argStr ? `job jobs/${safeName} ${argStr}` : `job jobs/${safeName}`
     sendToRequester(cmd)
     addLog('requester', `> ${cmd}`, 'accent')
     res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -699,6 +713,7 @@ function getPublicState () {
   return {
     requesterLaunched: state.requesterLaunched,
     workerLaunched: state.workerLaunched,
+    requesterId: state.requesterId,
     workers: state.workers,
     pendingTasks: state.pendingTasks,
     resultsReceived: state.resultsReceived,
