@@ -84,6 +84,15 @@ export function split (data, _n) {
 }
 
 export function compute (chunk) {
+  function heatToRgb (heat) {
+    return heat.map(row => row.map(v => {
+      const t = Math.max(0, Math.min(1, v / 100))
+      const r = Math.round(Math.min(255, t < 0.5 ? 0 : (t - 0.5) * 2 * 255))
+      const g = Math.round(Math.min(255, t < 0.25 ? t * 4 * 255 : t < 0.75 ? 255 : (1 - t) * 4 * 255))
+      const b = Math.round(Math.min(255, t < 0.5 ? (1 - t * 2) * 255 : 0))
+      return [r, g, b]
+    }))
+  }
   // iter 0, strip 0: apply first G-S step using initial grid
   const { startRow, endRow, gridSize, topVal, botVal, leftVal, rightVal, prevGrid } = chunk
   const n = endRow - startRow
@@ -106,7 +115,7 @@ export function compute (chunk) {
       next[y][x] = (up + down + left + right) / 4
     }
   }
-  return { iter: chunk.iter, strip: chunk.strip, startRow, endRow, rows: next }
+  return { iter: chunk.iter, strip: chunk.strip, startRow, endRow, rows: heatToRgb(next), heat: next }
 }
 
 // dep-aware code for strips with dependencies
@@ -114,15 +123,23 @@ export const depAwareCode = `
   const { iter, strip, startRow, endRow, gridSize, topVal, botVal, leftVal, rightVal, prevGrid } = chunk
   const n = endRow - startRow
 
+  function heatToRgb (heat) {
+    return heat.map(row => row.map(v => {
+      const t = Math.max(0, Math.min(1, v / 100))
+      const r = Math.round(Math.min(255, t < 0.5 ? 0 : (t - 0.5) * 2 * 255))
+      const g = Math.round(Math.min(255, t < 0.25 ? t * 4 * 255 : t < 0.75 ? 255 : (1 - t) * 4 * 255))
+      const b = Math.round(Math.min(255, t < 0.5 ? (1 - t * 2) * 255 : 0))
+      return [r, g, b]
+    }))
+  }
+
   // dep[0] is always the immediately preceding strip (prev strip same iter or last strip prev iter)
-  // For Gauss-Seidel: we need the "above" rows from the dep strip
+  // Use dep.heat (float values) not dep.rows (rgb) for computation
   const depStrip = deps && deps[0] ? deps[0] : null
 
-  // Build the "previous state" for rows above our strip
-  // from dep strip if available, otherwise from prevGrid
   function getAboveRows () {
     if (depStrip && depStrip.endRow === startRow) {
-      return depStrip.rows  // dep strip is directly above us — use its updated rows
+      return depStrip.heat  // dep strip directly above — use its updated heat values
     }
     return prevGrid ? prevGrid.slice(0, startRow) : []
   }
@@ -149,27 +166,17 @@ export const depAwareCode = `
     }
   }
 
-  return { iter, strip, startRow, endRow, rows: next }
+  return { iter, strip, startRow, endRow, rows: heatToRgb(next), heat: next }
 `
 
 export function join (results) {
   const lastIter = Math.max(...results.map(r => r.iter))
   const finalStrips = results.filter(r => r.iter === lastIter).sort((a, b) => a.startRow - b.startRow)
-  const fullGrid = finalStrips.flatMap(s => s.rows)
-
-  let minVal = Infinity, maxVal = -Infinity
-  for (const row of fullGrid) for (const v of row) { if (v < minVal) minVal = v; if (v > maxVal) maxVal = v }
-  const range = maxVal - minVal || 1
+  const fullGrid = finalStrips.flatMap(s => s.rows)  // rows are already [r,g,b] triples
 
   let ppm = `P3\n${fullGrid[0].length} ${fullGrid.length}\n255\n`
   for (const row of fullGrid) {
-    ppm += row.map(v => {
-      const t = (v - minVal) / range
-      const r = Math.round(Math.min(255, t < 0.5 ? 0 : (t - 0.5) * 2 * 255))
-      const g = Math.round(Math.min(255, t < 0.25 ? t * 4 * 255 : t < 0.75 ? 255 : (1 - t) * 4 * 255))
-      const b = Math.round(Math.min(255, t < 0.5 ? (1 - t * 2) * 255 : 0))
-      return `${r} ${g} ${b}`
-    }).join(' ') + '\n'
+    ppm += row.map(([r, g, b]) => `${r} ${g} ${b}`).join(' ') + '\n'
   }
   return ppm
 }

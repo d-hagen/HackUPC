@@ -498,8 +498,8 @@ rl.on('line', async (line) => {
       }
 
       // Infer full image dimensions from data or chunks for preview positioning
-      const imageWidth = mod.data.width || chunks.reduce((m, c) => Math.max(m, c.endCol ?? (c.rows ? 0 : 0)), 0) || null
-      const imageHeight = mod.data.height || chunks.reduce((m, c) => Math.max(m, c.endRow ?? 0), 0) || null
+      const imageWidth = mod.data.width || mod.data.gridSize || chunks.reduce((m, c) => Math.max(m, c.endCol ?? c.gridSize ?? 0), 0) || null
+      const imageHeight = mod.data.height || mod.data.gridSize || chunks.reduce((m, c) => Math.max(m, c.endRow ?? 0), 0) || null
 
       pendingJobs.set(jobId, {
         totalChunks: chunks.length,

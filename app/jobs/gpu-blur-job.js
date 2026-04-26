@@ -109,11 +109,11 @@ export const gpuComputeCode = `
 export function join (results) {
   results.sort((a, b) => a.startRow - b.startRow)
   const fullWidth = results[0].width
-  const fullHeight = results.reduce((s, r) => s + r.pixels.length, 0)
+  const fullHeight = results.reduce((s, r) => s + r.rows.length, 0)
 
   let ppm = `P3\n${fullWidth} ${fullHeight}\n255\n`
   for (const strip of results) {
-    for (const row of strip.pixels) {
+    for (const row of strip.rows) {
       ppm += row.map(px => `${px[0]} ${px[1]} ${px[2]}`).join(' ') + '\n'
     }
   }

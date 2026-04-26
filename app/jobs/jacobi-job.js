@@ -93,10 +93,19 @@ export function split (data, _n) {
 // For iter 0: uses initialRows from chunk
 // For iter k>0: reconstructs full grid from deps (all strips from iter k-1), applies Jacobi
 export function compute (chunk) {
+  function heatToRgb (heat) {
+    return heat.map(row => row.map(v => {
+      const t = Math.max(0, Math.min(1, v / 100))
+      const r = Math.round(Math.min(255, t < 0.5 ? 0 : (t - 0.5) * 2 * 255))
+      const g = Math.round(Math.min(255, t < 0.25 ? t * 4 * 255 : t < 0.75 ? 255 : (1 - t) * 4 * 255))
+      const b = Math.round(Math.min(255, t < 0.5 ? (1 - t * 2) * 255 : 0))
+      return [r, g, b]
+    }))
+  }
   const { iter, strip, startRow, endRow, gridSize, topVal, botVal, leftVal, rightVal, initialRows } = chunk
 
   // deps is injected by worker.js when task has dependsOn
-  // deps[i] = output of strip i from previous iteration = { strip, startRow, endRow, rows }
+  // deps[i] = output of strip i from previous iteration = { strip, startRow, endRow, heat }
   // We reconstruct full previous grid from all dep strips
 
   function jacobiStep (prevGrid) {
@@ -134,7 +143,7 @@ export function compute (chunk) {
     throw new Error('deps injection not available in regular compute — use depAwareCode')
   }
 
-  return { iter, strip, startRow, endRow, rows: stripRows }
+  return { iter, strip, startRow, endRow, rows: heatToRgb(stripRows), heat: stripRows }
 }
 
 // For tasks with dependsOn, worker.js injects deps as an extra argument.
@@ -142,6 +151,16 @@ export function compute (chunk) {
 // iter 0 still uses compute() above (no deps).
 export const depAwareCode = `
   const { iter, strip, startRow, endRow, gridSize, topVal, botVal, leftVal, rightVal } = chunk
+
+  function heatToRgb (heat) {
+    return heat.map(row => row.map(v => {
+      const t = Math.max(0, Math.min(1, v / 100))
+      const r = Math.round(Math.min(255, t < 0.5 ? 0 : (t - 0.5) * 2 * 255))
+      const g = Math.round(Math.min(255, t < 0.25 ? t * 4 * 255 : t < 0.75 ? 255 : (1 - t) * 4 * 255))
+      const b = Math.round(Math.min(255, t < 0.5 ? (1 - t * 2) * 255 : 0))
+      return [r, g, b]
+    }))
+  }
 
   function jacobiStep (prevRows, fullGridRows) {
     const n = endRow - startRow
@@ -166,14 +185,14 @@ export const depAwareCode = `
     return next
   }
 
-  // deps = array of { iter, strip, startRow, endRow, rows } from all prev-iter strips
-  // Reconstruct full previous grid
+  // deps = array of { iter, strip, startRow, endRow, heat } from all prev-iter strips
+  // Reconstruct full previous grid using heat (float values), not rows (rgb)
   const allPrevRows = deps && deps.length > 0
-    ? deps.slice().sort((a, b) => a.startRow - b.startRow).flatMap(d => d.rows)
+    ? deps.slice().sort((a, b) => a.startRow - b.startRow).flatMap(d => d.heat)
     : chunk.initialRows || []
 
   const stripRows = jacobiStep(null, allPrevRows)
-  return { iter, strip, startRow, endRow, rows: stripRows }
+  return { iter, strip, startRow, endRow, rows: heatToRgb(stripRows), heat: stripRows }
 `
 
 export function join (results) {
@@ -183,31 +202,12 @@ export function join (results) {
     .filter(r => r.iter === lastIter)
     .sort((a, b) => a.startRow - b.startRow)
 
-  const gridSize = finalStrips.reduce((s, r) => s + r.rows.length, 0)
-  const fullGrid = finalStrips.flatMap(s => s.rows)
+  const fullGrid = finalStrips.flatMap(s => s.rows)  // rows are already [r,g,b] triples
+  const gridSize = fullGrid.length
 
-  // Find min/max for normalization
-  let minVal = Infinity, maxVal = -Infinity
-  for (const row of fullGrid) {
-    for (const v of row) {
-      if (v < minVal) minVal = v
-      if (v > maxVal) maxVal = v
-    }
-  }
-  const range = maxVal - minVal || 1
-
-  // Render as heatmap: blue (cold/0) → red (hot/100)
   let ppm = `P3\n${gridSize} ${gridSize}\n255\n`
   for (const row of fullGrid) {
-    const pixels = row.map(v => {
-      const t = (v - minVal) / range  // 0..1
-      // Blue-cyan-green-yellow-red heatmap
-      const r = Math.round(Math.min(255, Math.max(0, t < 0.5 ? 0 : (t - 0.5) * 2 * 255)))
-      const g = Math.round(Math.min(255, Math.max(0, t < 0.25 ? t * 4 * 255 : t < 0.75 ? 255 : (1 - t) * 4 * 255)))
-      const b = Math.round(Math.min(255, Math.max(0, t < 0.5 ? (1 - t * 2) * 255 : 0)))
-      return `${r} ${g} ${b}`
-    })
-    ppm += pixels.join(' ') + '\n'
+    ppm += row.map(([r, g, b]) => `${r} ${g} ${b}`).join(' ') + '\n'
   }
   return ppm
 }

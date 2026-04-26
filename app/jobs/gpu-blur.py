@@ -102,7 +102,7 @@ print(json.dumps({
     'startRow': start_row,
     'endRow': end_row,
     'width': width,
-    'pixels': result_pixels,
+    'rows': result_pixels,
     'device': device_name,
     'elapsed_ms': round(elapsed, 1)
 }))
