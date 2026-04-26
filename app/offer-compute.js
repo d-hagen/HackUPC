@@ -238,7 +238,7 @@ async function processTasks () {
       // Block on unresolved dependencies
       if (entry.dependsOn && entry.dependsOn.length > 0) {
         const missing = entry.dependsOn.filter(id => !depResults.has(id))
-        if (missing.length > 0) continue // deps not ready yet
+        if (missing.length > 0) { resetIdleTimer(); continue } // deps pending — stay alive
       }
 
       // Collect dep outputs in order for injection

@@ -30,30 +30,42 @@ console.log('')
 let previewServer = null
 let previewPngFile = null
 
-function startPreviewServer (pngFile) {
+function startPreviewServer (pngFile, dagMeta) {
   if (previewServer) return // already running
   previewPngFile = pngFile
+
+  const hasDag = !!dagMeta
 
   const html = `<!DOCTYPE html>
 <html>
 <head>
 <title>PeerCompute — Live Render</title>
 <style>
-  body { margin: 0; background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: monospace; color: #aaa; }
-  h2 { margin: 0 0 12px; font-size: 14px; letter-spacing: 2px; color: #555; }
-  #img-wrap { position: relative; }
-  img { display: block; max-width: 90vw; max-height: 85vh; image-rendering: pixelated; border: 1px solid #333; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111; display: flex; flex-direction: ${hasDag ? 'row' : 'column'}; align-items: ${hasDag ? 'flex-start' : 'center'}; justify-content: center; min-height: 100vh; font-family: monospace; color: #aaa; gap: 32px; padding: 24px; }
+  .panel { display: flex; flex-direction: column; align-items: center; }
+  h2 { margin: 0 0 12px; font-size: 13px; letter-spacing: 2px; color: #555; }
+  img { display: block; max-width: ${hasDag ? '50vw' : '90vw'}; max-height: 85vh; image-rendering: pixelated; border: 1px solid #333; }
   #status { margin-top: 10px; font-size: 12px; color: #444; }
+  #dag-wrap { position: relative; }
+  canvas { border: 1px solid #333; background: #0a0a0a; }
 </style>
 </head>
 <body>
-<h2>PEERCOMPUTE — LIVE RENDER</h2>
-<div id="img-wrap"><img id="img" src="/image?t=0" /></div>
-<div id="status">waiting for chunks…</div>
+<div class="panel">
+  <h2>PEERCOMPUTE — LIVE RENDER</h2>
+  <img id="img" src="/image?t=0" />
+  <div id="status">waiting for chunks…</div>
+</div>
+${hasDag ? `<div class="panel">
+  <h2>TASK DEPENDENCY GRAPH</h2>
+  <div id="dag-wrap"><canvas id="dag"></canvas></div>
+</div>` : ''}
 <script>
   let t = 0
   let chunks = 0
   let total = 0
+
   setInterval(async () => {
     const res = await fetch('/meta')
     const meta = await res.json()
@@ -67,12 +79,104 @@ function startPreviewServer (pngFile) {
     t++
     document.getElementById('img').src = '/image?t=' + t
   }, 500)
+
+${hasDag ? `
+  const N = ${dagMeta.N}
+  const CELL = 72
+  const PAD = 36
+  const canvas = document.getElementById('dag')
+  const W = N * CELL + PAD * 2
+  canvas.width = W; canvas.height = W
+  const ctx = canvas.getContext('2d')
+
+  function cellCenter(r, c) {
+    return [PAD + c * CELL + CELL / 2, PAD + r * CELL + CELL / 2]
+  }
+
+  function drawArrow(x1, y1, x2, y2, color) {
+    const dx = x2 - x1, dy = y2 - y1
+    const len = Math.sqrt(dx*dx + dy*dy)
+    const r = 18  // node radius to stop arrow at edge
+    const sx = x1 + dx / len * r
+    const sy = y1 + dy / len * r
+    const ex = x2 - dx / len * (r + 4)
+    const ey = y2 - dy / len * (r + 4)
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey)
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke()
+    // arrowhead
+    const angle = Math.atan2(ey - sy, ex - sx)
+    ctx.beginPath()
+    ctx.moveTo(ex, ey)
+    ctx.lineTo(ex - 8 * Math.cos(angle - 0.4), ey - 8 * Math.sin(angle - 0.4))
+    ctx.lineTo(ex - 8 * Math.cos(angle + 0.4), ey - 8 * Math.sin(angle + 0.4))
+    ctx.closePath(); ctx.fillStyle = color; ctx.fill()
+  }
+
+  async function renderDag() {
+    const res = await fetch('/dag')
+    const dag = await res.json()  // { tasks: [{row,col,state,value,worker}], N }
+    ctx.clearRect(0, 0, W, W)
+
+    // Draw arrows first (behind nodes)
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const [x, y] = cellCenter(r, c)
+        const t = dag.tasks[r * N + c]
+        const arrowColor = t.state === 'done' ? '#2a4a2a' : '#2a2a2a'
+        if (r > 0) {
+          const [px, py] = cellCenter(r - 1, c)
+          drawArrow(px, py, x, y, arrowColor)
+        }
+        if (c > 0) {
+          const [px, py] = cellCenter(r, c - 1)
+          drawArrow(px, py, x, y, arrowColor)
+        }
+      }
+    }
+
+    // Draw nodes
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const [x, y] = cellCenter(r, c)
+        const t = dag.tasks[r * N + c]
+        const state = t.state  // 'pending' | 'ready' | 'done'
+        const fill = state === 'done' ? '#1a5c1a' : state === 'ready' ? '#5c4a00' : '#1a1a2a'
+        const border = state === 'done' ? '#3f3' : state === 'ready' ? '#fa0' : '#334'
+        ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI * 2)
+        ctx.fillStyle = fill; ctx.fill()
+        ctx.strokeStyle = border; ctx.lineWidth = 2; ctx.stroke()
+        // label
+        ctx.fillStyle = state === 'done' ? '#7f7' : state === 'ready' ? '#fc0' : '#446'
+        ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+        ctx.fillText(r + ',' + c, x, y - 4)
+        if (state === 'done' && t.value != null) {
+          ctx.fillStyle = '#555'; ctx.font = '9px monospace'
+          ctx.fillText('v=' + t.value, x, y + 6)
+        }
+        if (state === 'ready') {
+          ctx.fillStyle = '#fa0'; ctx.font = '8px monospace'
+          ctx.fillText('READY', x, y + 6)
+        }
+      }
+    }
+
+    // Legend
+    ctx.font = '10px monospace'; ctx.textAlign = 'left'
+    ctx.fillStyle = '#3f3'; ctx.fillText('● done', 10, W - 44)
+    ctx.fillStyle = '#fa0'; ctx.fillText('● ready (waiting for worker)', 10, W - 30)
+    ctx.fillStyle = '#446'; ctx.fillText('● blocked (deps pending)', 10, W - 16)
+  }
+
+  setInterval(renderDag, 500)
+  renderDag()
+` : ''}
 </script>
 </body>
 </html>`
 
   let metaChunks = 0
   let metaTotal = 0
+  let dagState = null  // { tasks: [{row,col,state,value}], N }
 
   previewServer = http.createServer((req, res) => {
     if (req.url === '/') {
@@ -86,7 +190,6 @@ function startPreviewServer (pngFile) {
           res.end(data)
         } catch { res.writeHead(500); res.end() }
       } else {
-        // Serve 1x1 black PNG if no file yet
         const black = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
         res.writeHead(200, { 'Content-Type': 'image/png' })
         res.end(black)
@@ -94,12 +197,16 @@ function startPreviewServer (pngFile) {
     } else if (req.url === '/meta') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ chunks: metaChunks, total: metaTotal }))
+    } else if (req.url === '/dag') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(dagState || { tasks: [], N: 0 }))
     } else {
       res.writeHead(404); res.end()
     }
   })
 
   previewServer.meta = (chunks, total) => { metaChunks = chunks; metaTotal = total }
+  previewServer.dag = (state) => { dagState = state }
   previewServer.listen(7842, '127.0.0.1', () => {
     console.log('[~] Preview server: http://localhost:7842')
     try { execSync('open http://localhost:7842') } catch {}
@@ -261,6 +368,21 @@ base.on('update', async () => {
         if (job && !job.results.has(chunkIndex)) {
           job.results.set(chunkIndex, entry.error ? { error: entry.error } : entry.output)
           console.log(`\n[<] Chunk ${chunkIndex + 1}/${job.totalChunks} done (by ${entry.by}, ${entry.elapsed || '?'}ms)`)
+
+          // Update DAG visualization state
+          if (job.dagTasks && entry.output) {
+            job.dagTasks[chunkIndex].state = 'done'
+            job.dagTasks[chunkIndex].value = entry.output.value ?? null
+            // Mark newly unblocked tasks as 'ready'
+            const N = job.dagN
+            for (let i = 0; i < job.dagTasks.length; i++) {
+              if (job.dagTasks[i].state !== 'blocked') continue
+              const deps = job.dagTasks[i].dependsOn || []
+              const allDone = deps.every(depIdx => job.dagTasks[depIdx]?.state === 'done')
+              if (allDone) job.dagTasks[i].state = 'ready'
+            }
+            if (previewServer) previewServer.dag({ tasks: job.dagTasks, N: job.dagN })
+          }
 
           // Progressive preview: works for both strips and grid blocks
           if (job.outputFile && extname(job.outputFile) === '.ppm') {
@@ -491,9 +613,13 @@ rl.on('line', async (line) => {
       console.log(`[>] Job ${jobId.slice(0, 8)}… splitting into ${chunks.length} chunks across ${workerIds.length || '?'} worker(s)`)
 
       const jobOutputFile = mod.outputFile || null
+
+      // DAG metadata for visualization (if job exports dagLayout = 'grid')
+      const dagMeta = mod.dagLayout === 'grid' ? { N: Math.round(Math.sqrt(chunks.length)) } : null
+
       if (jobOutputFile && extname(jobOutputFile) === '.ppm') {
         const pngFile = jobOutputFile.replace('.ppm', '.png')
-        startPreviewServer(pngFile)
+        startPreviewServer(pngFile, dagMeta)
         if (previewServer) previewServer.meta(0, chunks.length)
       }
 
@@ -501,25 +627,48 @@ rl.on('line', async (line) => {
       const imageWidth = mod.data.width || mod.data.gridSize || chunks.reduce((m, c) => Math.max(m, c.endCol ?? c.gridSize ?? 0), 0) || null
       const imageHeight = mod.data.height || mod.data.gridSize || chunks.reduce((m, c) => Math.max(m, c.endRow ?? 0), 0) || null
 
+      // Build taskId map for DAG: chunkIndex -> taskId (needed for dependsOn resolution)
+      const chunkTaskIds = Array.from({ length: chunks.length }, () => crypto.randomUUID())
+
+      // Build DAG task state array for visualization (tracks which chunks are done/pending)
+      const dagTasks = dagMeta
+        ? chunks.map((c, i) => ({ row: c.row ?? Math.floor(i / dagMeta.N), col: c.col ?? (i % dagMeta.N), state: 'blocked', value: null, dependsOn: c.dependsOn }))
+        : null
+
+      // Mark tasks with no deps as 'ready' immediately
+      if (dagTasks) {
+        for (const t of dagTasks) {
+          if (!t.dependsOn || t.dependsOn.length === 0) t.state = 'ready'
+        }
+        if (previewServer) previewServer.dag({ tasks: dagTasks, N: dagMeta.N })
+      }
+
+      // Whether any chunk has deps — if so, don't round-robin assign (let workers self-select)
+      const hasAnyDeps = chunks.some(c => c.dependsOn && c.dependsOn.length > 0)
+
       pendingJobs.set(jobId, {
         totalChunks: chunks.length,
         results: new Map(),
         joinFn: mod.join,
         outputFile: jobOutputFile,
         imageWidth,
-        imageHeight
+        imageHeight,
+        dagTasks,
+        dagN: dagMeta?.N || null,
+        chunkTaskIds
       })
-
-      // Build taskId map for DAG: chunkIndex -> taskId (needed for dependsOn resolution)
-      const chunkTaskIds = Array.from({ length: chunks.length }, () => crypto.randomUUID())
 
       for (const i of chunkOrder) {
         const taskId = chunkTaskIds[i]
         taskToJob.set(taskId, { jobId, chunkIndex: i })
-        // For jobs with requirements, pick capable worker; otherwise round-robin
-        const assignedTo = jobRequires
-          ? pickWorkerForTask(jobRequires, workers)
-          : (workerIds.length > 0 ? workerIds[i % workerIds.length] : null)
+
+        // DAG jobs: no assignedTo — workers self-select based on dep availability
+        // Non-DAG jobs: round-robin for load distribution
+        const assignedTo = hasAnyDeps
+          ? null
+          : (jobRequires
+              ? pickWorkerForTask(jobRequires, workers)
+              : (workerIds.length > 0 ? workerIds[i % workerIds.length] : null))
 
         const chunk = chunks[i]
 
@@ -561,7 +710,7 @@ rl.on('line', async (line) => {
       pendingTaskCount += chunks.length
       addConsumed(chunks.length)
       broadcast()
-      console.log(`[>] ${chunks.length} subtasks posted`)
+      console.log(`[>] ${chunks.length} subtasks posted${hasAnyDeps ? ' (DAG mode — dynamic assignment)' : ''}`)
 
     } catch (err) {
       console.log(`[!] Error loading job: ${err.message}`)
