@@ -43,6 +43,7 @@ const discoverySwarm = new Hyperswarm(swarmOpts)
 const replicationSwarm = new Hyperswarm(swarmOpts)
 
 replicationSwarm.on('connection', (conn) => {
+  conn.on('error', () => {})
   if (store) store.replicate(conn)
 })
 
@@ -434,6 +435,7 @@ function pickBestRequester () {
 discoverySwarm.join(NETWORK_TOPIC, { client: true, server: true })
 
 discoverySwarm.on('connection', (conn) => {
+  conn.on('error', () => {})
   conn.on('data', async (data) => {
     try {
       const msg = JSON.parse(data.toString())
