@@ -231,6 +231,7 @@ discoverySwarm.join(NETWORK_TOPIC, { client: true, server: true })
 // Replication swarm: base.discoveryKey only, for Autobase sync
 replicationSwarm.join(base.discoveryKey, { client: true, server: true })
 replicationSwarm.on('connection', (conn) => {
+  conn.on('error', () => {})
   store.replicate(conn)
 })
 
