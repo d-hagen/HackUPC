@@ -38,17 +38,139 @@ The core innovation is using **Autobase as a distributed task queue**. Nobody ha
 - **P2P file transfer** — upload and download files between peers via Hyperdrive; task code gets injected `readFile()`/`writeFile()` helpers for direct drive I/O
 - **Reputation & roaming** — workers rank requesters by reputation score and automatically roam to where work is
 
+## Quick Start
+
+### Prerequisites
+
+```bash
+node --version   # Node.js 20+ required
+cd app && npm install
+```
+
+That's it. No cloud accounts, no Docker, no Python, no tokens.
+
+---
+
+### Option A — Web UI (recommended)
+
+One command starts everything — the backend, requester, and worker management — and opens a dashboard in your browser.
+
+```bash
+cd app
+node ui-server.js
+# Open http://localhost:7843
+```
+
+From the dashboard:
+
+1. Click **Start Requester** to join the network
+2. Click **Launch Worker** to offer compute from this machine
+3. Use the **CLI tab** to submit tasks: `run return 2+2`
+4. Watch tasks move through the **Task Queue** in real time
+
+---
+
+### Option B — CLI (two machines or two terminals)
+
+**Requester machine:**
+
+```bash
+cd app && npm install
+node request-compute.js
+```
+
+**Worker machine:**
+
+```bash
+cd app && npm install
+node offer-compute.js
+# Enable shell commands (optional):
+ALLOW_SHELL=1 node offer-compute.js
+```
+
+**In the requester prompt:**
+
+```
+run return 2 + 2
+run return Math.pow(2, 10)
+shell echo "hello from $(hostname)"
+job jobs/primes-job.js 4
+job jobs/mandelbrot-job.js 4
+bundle tasks/slugify-text.js "Hello World"
+upload data.csv
+status
+help
+```
+
+---
+
+### Option C — Local development (single machine, isolated network)
+
+```bash
+cd app && npm install
+
+# Terminal 1 — local DHT bootstrap
+node boot.js
+
+# Terminal 2 — requester
+BOOTSTRAP=localhost:8000 node request-compute.js
+
+# Terminal 3 — worker
+BOOTSTRAP=localhost:8000 ALLOW_SHELL=1 node offer-compute.js
+```
+
+Or with the UI:
+
+```bash
+# Terminal 1
+node boot.js
+
+# Terminal 2
+BOOTSTRAP=localhost:8000 node ui-server.js
+# Open http://localhost:7843
+```
+
+---
+
+### Environment Variables
+
+| Variable              | Description                                              |
+| --------------------- | -------------------------------------------------------- |
+| `BOOTSTRAP=host:port` | Use a local DHT bootstrap node instead of the public DHT |
+| `ALLOW_SHELL=1`       | Enable shell command execution on workers (opt-in)       |
+| `POOL_SIZE=N`         | Number of worker threads (default: CPU core count)       |
+| `PORT=N`              | UI server port (default: 7843)                           |
+
+### Requester CLI Commands
+
+| Command                   | Description                                                         |
+| ------------------------- | ------------------------------------------------------------------- |
+| `run <code>`              | Execute arbitrary JS on a worker — `run return 2+2`                 |
+| `file <path.js>`          | Send a .js file as a task                                           |
+| `bundle <path.js> [args]` | Bundle task + all npm deps via esbuild, no install needed on worker |
+| `job <path.js> [n]`       | Distributed job split across N workers (split / compute / join)     |
+| `shell <cmd>`             | Run a shell command on a worker (requires `ALLOW_SHELL=1`)          |
+| `upload <file> [name]`    | Upload a file to the shared Hyperdrive                              |
+| `download <path>`         | Download a file from a worker's output drive                        |
+| `files`                   | List uploaded files                                                 |
+| `workers`                 | List connected workers and their capabilities                       |
+| `results`                 | Show all task results                                               |
+| `status`                  | Show network status and reputation score                            |
+| `help`                    | Show all commands                                                   |
+
+---
+
 ### Supported Commands
 
-| Command | What it does |
-|---|---|
-| `run <code>` | Execute arbitrary JS code directly on a worker |
-| `file <path.js>` | Send a `.js` file as a task |
-| `bundle <path.js> [args]` | Bundle task + all npm dependencies via esbuild — workers don't need packages installed |
-| `job <path.js> [n] [args]` | Run a distributed split/join job across N workers |
-| `shell <cmd>` | Run a shell command on a worker (requires `ALLOW_SHELL=1`) |
-| `upload <file>` / `download <path>` | Transfer files between peers via Hyperdrive |
-| `workers` / `status` / `results` | View connected workers, network status, task results |
+| Command                             | What it does                                                                           |
+| ----------------------------------- | -------------------------------------------------------------------------------------- |
+| `run <code>`                        | Execute arbitrary JS code directly on a worker                                         |
+| `file <path.js>`                    | Send a `.js` file as a task                                                            |
+| `bundle <path.js> [args]`           | Bundle task + all npm dependencies via esbuild — workers don't need packages installed |
+| `job <path.js> [n] [args]`          | Run a distributed split/join job across N workers                                      |
+| `shell <cmd>`                       | Run a shell command on a worker (requires `ALLOW_SHELL=1`)                             |
+| `upload <file>` / `download <path>` | Transfer files between peers via Hyperdrive                                            |
+| `workers` / `status` / `results`    | View connected workers, network status, task results                                   |
 
 Or use the **web dashboard** — schedule jobs, monitor tasks, and view live previews from the browser.
 
@@ -56,15 +178,14 @@ Or use the **web dashboard** — schedule jobs, monitor tasks, and view live pre
 
 ### How It Compares
 
-| | **PeerCompute** | **BOINC** | **Golem** | **Render Network** |
-|---|---|---|---|---|
-| Infrastructure | None | Central server | Ethereum + Docker | Blockchain |
-| Setup | `npm install` | Install client + project app | Install Golem + Docker + yagna | OctaneRender + RNDR app |
-| Payment | Reputation (no money) | Volunteer only | ETH/GLM tokens | RNDR tokens |
-| Task queue | Autobase P2P log | Server database | Smart contracts | Centralized |
-| Dependency bundling | esbuild (auto-inlined) | Manual packaging | Docker containers | N/A |
-| Hardware routing | Auto-detect GPU/CPU/RAM | Manual project selection | Provider profiles | Manual selection |
-
+|                     | **PeerCompute**         | **BOINC**                    | **Golem**                      | **Render Network**      |
+| ------------------- | ----------------------- | ---------------------------- | ------------------------------ | ----------------------- |
+| Infrastructure      | None                    | Central server               | Ethereum + Docker              | Blockchain              |
+| Setup               | `npm install`           | Install client + project app | Install Golem + Docker + yagna | OctaneRender + RNDR app |
+| Payment             | Reputation (no money)   | Volunteer only               | ETH/GLM tokens                 | RNDR tokens             |
+| Task queue          | Autobase P2P log        | Server database              | Smart contracts                | Centralized             |
+| Dependency bundling | esbuild (auto-inlined)  | Manual packaging             | Docker containers              | N/A                     |
+| Hardware routing    | Auto-detect GPU/CPU/RAM | Manual project selection     | Provider profiles              | Manual selection        |
 
 ---
 
@@ -97,73 +218,80 @@ Opens a live preview with two panels: the color image building up and a DAG grap
 ## What's Built (Working)
 
 ### Core System
-| Component | File | Status |
-|---|---|---|
-| **Requester CLI** | `request-compute.js` | Done — hosts Autobase, advertises on network, assigns tasks, collects results |
-| **Worker CLI** | `offer-compute.js` | Done — discovers requesters, joins, executes tasks, roams when idle |
-| **Generic task executor** | `worker.js` | Done — runs arbitrary JS function bodies via `AsyncFunction`, shell commands via subprocess |
-| **Shared Autobase setup** | `base-setup.js` | Done — creates Autobase + Hyperswarm + Hyperdrive, handles local/public DHT |
-| **Reputation system** | `reputation.js` | Done — local ledger (donated/consumed), score broadcast in advertisements |
-| **File transfer (Hyperdrive)** | `base-setup.js` + `worker.js` | Done — upload/download files between peers, task code gets `readFile()`/`writeFile()` |
-| **npm/module bundler** | `bundler.js` | Done — bundles task code + all npm dependencies into a self-contained string via esbuild. Workers don't need packages pre-installed |
-| **Hardware capability detection** | `capabilities.js` | Done — detects GPU (CUDA/MPS/ROCm), CPU cores, RAM, Python, PyTorch. Workers announce capabilities, requesters route tasks to best-fit worker |
+
+| Component                         | File                          | Status                                                                                                                                        |
+| --------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Requester CLI**                 | `request-compute.js`          | Done — hosts Autobase, advertises on network, assigns tasks, collects results                                                                 |
+| **Worker CLI**                    | `offer-compute.js`            | Done — discovers requesters, joins, executes tasks, roams when idle                                                                           |
+| **Generic task executor**         | `worker.js`                   | Done — runs arbitrary JS function bodies via `AsyncFunction`, shell commands via subprocess                                                   |
+| **Shared Autobase setup**         | `base-setup.js`               | Done — creates Autobase + Hyperswarm + Hyperdrive, handles local/public DHT                                                                   |
+| **Reputation system**             | `reputation.js`               | Done — local ledger (donated/consumed), score broadcast in advertisements                                                                     |
+| **File transfer (Hyperdrive)**    | `base-setup.js` + `worker.js` | Done — upload/download files between peers, task code gets `readFile()`/`writeFile()`                                                         |
+| **npm/module bundler**            | `bundler.js`                  | Done — bundles task code + all npm dependencies into a self-contained string via esbuild. Workers don't need packages pre-installed           |
+| **Hardware capability detection** | `capabilities.js`             | Done — detects GPU (CUDA/MPS/ROCm), CPU cores, RAM, Python, PyTorch. Workers announce capabilities, requesters route tasks to best-fit worker |
 
 ### Task Types
-| Feature | Status |
-|---|---|
-| **Single task execution** | Done — `run <code>` sends any JS to a worker |
-| **File-based tasks** | Done — `file <path.js>` sends a .js file as task |
-| **Bundled tasks with npm deps** | Done — `bundle <path.js> [args]` uses esbuild to inline all npm imports, workers execute without needing packages installed |
-| **Distributed jobs (split/join)** | Done — `job <path.js> [n]` splits data across N workers, joins results |
-| **Shell command execution** | Done — `shell <command>` runs any shell command on a worker (`ALLOW_SHELL=1`) |
-| **Task timeout + kill** | Done — shell tasks have configurable timeout (default 60s), SIGKILL on expiry |
-| **Worker assignment** | Done — round-robin `assignedTo` prevents duplicate computation |
+
+| Feature                           | Status                                                                                                                      |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| **Single task execution**         | Done — `run <code>` sends any JS to a worker                                                                                |
+| **File-based tasks**              | Done — `file <path.js>` sends a .js file as task                                                                            |
+| **Bundled tasks with npm deps**   | Done — `bundle <path.js> [args]` uses esbuild to inline all npm imports, workers execute without needing packages installed |
+| **Distributed jobs (split/join)** | Done — `job <path.js> [n]` splits data across N workers, joins results                                                      |
+| **Shell command execution**       | Done — `shell <command>` runs any shell command on a worker (`ALLOW_SHELL=1`)                                               |
+| **Task timeout + kill**           | Done — shell tasks have configurable timeout (default 60s), SIGKILL on expiry                                               |
+| **Worker assignment**             | Done — round-robin `assignedTo` prevents duplicate computation                                                              |
 
 ### Capability-Based Routing
-| Feature | Status |
-|---|---|
-| **GPU detection** | Done — NVIDIA CUDA via `nvidia-smi`, Apple Silicon MPS via `sysctl`, AMD ROCm via `rocm-smi` |
-| **CPU/RAM profiling** | Done — core count, memory, architecture, platform |
-| **Python/PyTorch detection** | Done — version check, CUDA/MPS availability for PyTorch |
-| **Requirement matching** | Done — `meetsRequirements(requires, caps)` checks GPU, CPU, RAM, platform, Python, shell access |
-| **Smart worker selection** | Done — `pickWorkerForTask()` filters eligible workers, sorts by GPU then CPU cores |
-| **PyTorch device routing** | Done — `bestTorchDevice()` returns optimal device string (cuda/mps/cpu) |
+
+| Feature                      | Status                                                                                          |
+| ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| **GPU detection**            | Done — NVIDIA CUDA via `nvidia-smi`, Apple Silicon MPS via `sysctl`, AMD ROCm via `rocm-smi`    |
+| **CPU/RAM profiling**        | Done — core count, memory, architecture, platform                                               |
+| **Python/PyTorch detection** | Done — version check, CUDA/MPS availability for PyTorch                                         |
+| **Requirement matching**     | Done — `meetsRequirements(requires, caps)` checks GPU, CPU, RAM, platform, Python, shell access |
+| **Smart worker selection**   | Done — `pickWorkerForTask()` filters eligible workers, sorts by GPU then CPU cores              |
+| **PyTorch device routing**   | Done — `bestTorchDevice()` returns optimal device string (cuda/mps/cpu)                         |
 
 ### Marketplace Model
-| Feature | Status |
-|---|---|
-| **Auto-discovery** | Done — shared network topic, no keys to exchange |
-| **Multi-requester support** | Done — each requester hosts own Autobase, workers roam between them |
-| **Idle timeout + roaming** | Done — workers leave after 15s idle, find next requester |
-| **Reputation-based ranking** | Done — workers prefer higher-reputation requesters |
-| **Unique worker stores** | Done — `store-${workerId}` avoids collisions |
-| **Proper cleanup on leave** | Done — closes base, leaves topic, clears pool |
+
+| Feature                      | Status                                                              |
+| ---------------------------- | ------------------------------------------------------------------- |
+| **Auto-discovery**           | Done — shared network topic, no keys to exchange                    |
+| **Multi-requester support**  | Done — each requester hosts own Autobase, workers roam between them |
+| **Idle timeout + roaming**   | Done — workers leave after 15s idle, find next requester            |
+| **Reputation-based ranking** | Done — workers prefer higher-reputation requesters                  |
+| **Unique worker stores**     | Done — `store-${workerId}` avoids collisions                        |
+| **Proper cleanup on leave**  | Done — closes base, leaves topic, clears pool                       |
 
 ### Reliability
-| Feature | Status |
-|---|---|
-| **Worker rejoin guard** | Done — `joining` flag prevents concurrent join attempts |
-| **Broadcast connection tracking** | Done — maintains active connection set, cleans up on close/error |
-| **Stale core handling** | Done — try/catch around `addWriter` in apply prevents stale cores from blocking the view |
-| **Race condition fixes** | Done — atomic state transitions, guard flags for concurrent operations |
+
+| Feature                           | Status                                                                                   |
+| --------------------------------- | ---------------------------------------------------------------------------------------- |
+| **Worker rejoin guard**           | Done — `joining` flag prevents concurrent join attempts                                  |
+| **Broadcast connection tracking** | Done — maintains active connection set, cleans up on close/error                         |
+| **Stale core handling**           | Done — try/catch around `addWriter` in apply prevents stale cores from blocking the view |
+| **Race condition fixes**          | Done — atomic state transitions, guard flags for concurrent operations                   |
 
 ### Example Bundled Tasks
-| Task | File | What it does |
-|---|---|---|
-| Duration formatter | `tasks/hello-ms.js` | Bundles the `ms` npm package to format milliseconds |
+
+| Task               | File                    | What it does                                                 |
+| ------------------ | ----------------------- | ------------------------------------------------------------ |
+| Duration formatter | `tasks/hello-ms.js`     | Bundles the `ms` npm package to format milliseconds          |
 | URL slug generator | `tasks/slugify-text.js` | Bundles the `slugify` npm package to create URL-safe strings |
-| Byte formatter | `tasks/format-bytes.js` | Bundles `ms` + custom logic with argument forwarding |
+| Byte formatter     | `tasks/format-bytes.js` | Bundles `ms` + custom logic with argument forwarding         |
 
 ### Example Distributed Jobs
-| Job | File | What it does |
-|---|---|---|
-| Sum array | `jobs/sum-job.js` | Splits 1000 numbers, sums in parallel, joins |
-| Find primes | `jobs/primes-job.js` | Splits range, sieves in parallel, merges sorted |
-| Mandelbrot | `jobs/mandelbrot-job.js` | Splits image into row chunks, renders in parallel, assembles ASCII art |
-| Image transform | `jobs/image-transform-job.js` | Grid-based distributed image filtering with live preview |
-| Wave-front DAG | `jobs/wave-dag-job.js` | Dependency-driven diagonal wavefront with DAG visualization |
-| GPU benchmark | `jobs/gpu-benchmark-job.js` | Splits matrix sizes across workers, benchmarks GPU via PyTorch |
-| Statistics (Python) | `jobs/stats-task.js` + `jobs/stats.py` | Computes sum/count/min/max/mean on data via Python subprocess |
+
+| Job                 | File                                   | What it does                                                           |
+| ------------------- | -------------------------------------- | ---------------------------------------------------------------------- |
+| Sum array           | `jobs/sum-job.js`                      | Splits 1000 numbers, sums in parallel, joins                           |
+| Find primes         | `jobs/primes-job.js`                   | Splits range, sieves in parallel, merges sorted                        |
+| Mandelbrot          | `jobs/mandelbrot-job.js`               | Splits image into row chunks, renders in parallel, assembles ASCII art |
+| Image transform     | `jobs/image-transform-job.js`          | Grid-based distributed image filtering with live preview               |
+| Wave-front DAG      | `jobs/wave-dag-job.js`                 | Dependency-driven diagonal wavefront with DAG visualization            |
+| GPU benchmark       | `jobs/gpu-benchmark-job.js`            | Splits matrix sizes across workers, benchmarks GPU via PyTorch         |
+| Statistics (Python) | `jobs/stats-task.js` + `jobs/stats.py` | Computes sum/count/min/max/mean on data via Python subprocess          |
 
 ---
 
@@ -171,60 +299,60 @@ Opens a live preview with two panels: the color image building up and a DAG grap
 
 ### 1. Scaling & Performance
 
-| Feature | What | Status |
-|---|---|---|
-| **Worker thread pool** | `worker_threads` for parallel task execution per worker | Done |
-| **WASM sandbox** | Execute WASM modules for safe, portable, near-native compute | High |
-| **GPU via Python execution** | Upload Python files with PyTorch/CUDA deps to workers, execute via JS task subprocess | Done |
-| **Streaming results** | Partial/progress updates during long tasks | Done |
-| **Task dependencies (DAG)** | DAG of tasks with `dependsOn` — B runs only after A completes, wavefront parallel execution | Done |
-| **Task claiming** | Workers write claims to Autobase before executing to prevent duplicate work across peers | Done |
-| **Incremental log scan** | Persistent scan indices so old job entries are never re-read on subsequent runs | Done |
-| **Batch thread dispatch** | Collect all dispatchable tasks first, dispatch to pool in one burst so all threads fill concurrently | Done |
+| Feature                      | What                                                                                                 | Status |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------- | ------ |
+| **Worker thread pool**       | `worker_threads` for parallel task execution per worker                                              | Done   |
+| **WASM sandbox**             | Execute WASM modules for safe, portable, near-native compute                                         | High   |
+| **GPU via Python execution** | Upload Python files with PyTorch/CUDA deps to workers, execute via JS task subprocess                | Done   |
+| **Streaming results**        | Partial/progress updates during long tasks                                                           | Done   |
+| **Task dependencies (DAG)**  | DAG of tasks with `dependsOn` — B runs only after A completes, wavefront parallel execution          | Done   |
+| **Task claiming**            | Workers write claims to Autobase before executing to prevent duplicate work across peers             | Done   |
+| **Incremental log scan**     | Persistent scan indices so old job entries are never re-read on subsequent runs                      | Done   |
+| **Batch thread dispatch**    | Collect all dispatchable tasks first, dispatch to pool in one burst so all threads fill concurrently | Done   |
 
 ### 2. UI & App
 
 **Current state:** Localhost HTTP dashboard served by `ui-server.js` (HTML/CSS/JS).
 
-| Feature | What | Status |
-|---|---|---|
-| **Web dashboard** | HTTP server on localhost serving a live dashboard with HTML/CSS — connected peers, task queue, results | Done |
-| **Live task dashboard** | Real-time view of pending/running/done tasks, worker status, and job results | Done |
-| **Job scheduling UI** | Submit jobs with arguments directly from the web interface | Done |
-| **Live image preview** | PPM job output rendered live in browser as chunks complete (Mandelbrot, image transforms, etc.) | Done |
-| **DAG visualization** | Canvas-based dependency graph showing task states (blocked/ready/done) with animated wavefront | Done |
+| Feature                 | What                                                                                                   | Status |
+| ----------------------- | ------------------------------------------------------------------------------------------------------ | ------ |
+| **Web dashboard**       | HTTP server on localhost serving a live dashboard with HTML/CSS — connected peers, task queue, results | Done   |
+| **Live task dashboard** | Real-time view of pending/running/done tasks, worker status, and job results                           | Done   |
+| **Job scheduling UI**   | Submit jobs with arguments directly from the web interface                                             | Done   |
+| **Live image preview**  | PPM job output rendered live in browser as chunks complete (Mandelbrot, image transforms, etc.)        | Done   |
+| **DAG visualization**   | Canvas-based dependency graph showing task states (blocked/ready/done) with animated wavefront         | Done   |
 
 ### 3. Refine Task Splitting
 
-| Feature | What | Effort |
-|---|---|---|
-| **Adaptive chunk sizing** | Benchmark workers, give bigger chunks to faster ones | Medium |
-| **Work stealing** | If worker A finishes early, it takes a chunk from worker B's queue | Medium |
-| **Streaming split** | For huge datasets: split lazily, stream chunks as workers request | High |
-| **Auto-retry failed chunks** | If a worker crashes, reassign its chunks to other workers | Low |
-| **Progress tracking per chunk** | Show which chunks are pending/running/done in real-time | Low |
-| **Built-in splitters** | Library of common split patterns: by rows, by array slice, by file list | Low |
+| Feature                         | What                                                                    | Effort |
+| ------------------------------- | ----------------------------------------------------------------------- | ------ |
+| **Adaptive chunk sizing**       | Benchmark workers, give bigger chunks to faster ones                    | Medium |
+| **Work stealing**               | If worker A finishes early, it takes a chunk from worker B's queue      | Medium |
+| **Streaming split**             | For huge datasets: split lazily, stream chunks as workers request       | High   |
+| **Auto-retry failed chunks**    | If a worker crashes, reassign its chunks to other workers               | Low    |
+| **Progress tracking per chunk** | Show which chunks are pending/running/done in real-time                 | Low    |
+| **Built-in splitters**          | Library of common split patterns: by rows, by array slice, by file list | Low    |
 
 ### 4. Pay-for-Compute (Concept)
 
 **Current state:** Reputation is `donated - consumed`, self-reported, local only. Not a payment system.
 
-| Level | What | Feasibility |
-|---|---|---|
-| **Credit ledger (current)** | Track compute donated/consumed per peer. Self-reported. | Done |
-| **Attestation-based credits** | Workers sign attestations of compute delivered. Requesters can verify. | Medium — needs crypto signatures |
-| **Token/credit system** | Peers earn credits for computing, spend credits for requesting. Tracked in a shared Autobase. | Medium — needs shared state + anti-cheat |
-| **Blockchain settlement** | Actual payments via Ethereum/Solana smart contracts. Workers get paid per task. | Out of scope — but architecture supports it as a layer |
+| Level                         | What                                                                                          | Feasibility                                            |
+| ----------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| **Credit ledger (current)**   | Track compute donated/consumed per peer. Self-reported.                                       | Done                                                   |
+| **Attestation-based credits** | Workers sign attestations of compute delivered. Requesters can verify.                        | Medium — needs crypto signatures                       |
+| **Token/credit system**       | Peers earn credits for computing, spend credits for requesting. Tracked in a shared Autobase. | Medium — needs shared state + anti-cheat               |
+| **Blockchain settlement**     | Actual payments via Ethereum/Solana smart contracts. Workers get paid per task.               | Out of scope — but architecture supports it as a layer |
 
 ### 5. Other Improvements
 
-| Feature | What | Effort |
-|---|---|---|
-| **Encryption (optional)** | Encrypt task data for specific worker's public key | High |
-| **Churn recovery** | If worker disconnects mid-task, timeout and reassign to another worker | Low |
-| **Peer health monitoring** | Heartbeat messages, detect dead workers, remove from pool | Low |
-| **Rate limiting** | Prevent spam: max tasks per minute per requester | Low |
-| **Config file** | `peercompute.json` for idle timeout, store path, bootstrap, etc. | Low |
+| Feature                    | What                                                                   | Effort |
+| -------------------------- | ---------------------------------------------------------------------- | ------ |
+| **Encryption (optional)**  | Encrypt task data for specific worker's public key                     | High   |
+| **Churn recovery**         | If worker disconnects mid-task, timeout and reassign to another worker | Low    |
+| **Peer health monitoring** | Heartbeat messages, detect dead workers, remove from pool              | Low    |
+| **Rate limiting**          | Prevent spam: max tasks per minute per requester                       | Low    |
+| **Config file**            | `peercompute.json` for idle timeout, store path, bootstrap, etc.       | Low    |
 
 ---
 
