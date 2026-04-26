@@ -215,33 +215,39 @@ async function processTasks () {
   processing = true
 
   let didWork = false
+  const pendingTasks = []        // uncompleted tasks found so far (survives try block)
   try {
     // Re-scan loop: after each batch completes, immediately re-scan for more
     // tasks that replicated during execution instead of waiting for the next trigger.
+    // Indices persist across iterations so we only scan new log entries.
+    const resultIndex = new Map()  // taskId -> output
+    const claimed = new Set()      // taskIds claimed by any worker
+    let scannedUpTo = 0            // how far we've read into the log
+
     while (base && base.writable) {
       const poolPromises = []
       let batchWork = false
 
-      // Phase 1: scan log once — build result/claim index and collect dispatchable tasks
+      // Phase 1: incrementally scan only new log entries since last iteration
       await base.update()
-      const resultIndex = new Map()  // taskId -> output
-      const claimed = new Set()      // taskIds claimed by any worker
-      const allEntries = []
-      for (let i = 0; i < base.view.length; i++) {
+      const len = base.view.length
+      for (let i = scannedUpTo; i < len; i++) {
         const e = await base.view.get(i)
-        allEntries.push(e)
         if (e.type === 'result') resultIndex.set(e.taskId, e.output)
-        if (e.type === 'claim') claimed.add(e.taskId)
+        else if (e.type === 'claim') claimed.add(e.taskId)
+        else if (e.type === 'task') pendingTasks.push(e)
       }
+      scannedUpTo = len
 
       const poolBatch = []   // tasks to dispatch to thread pool at once
       const mainBatch = []   // tasks that need main thread (shell/file-I/O)
       const freeThreads = pool.available
+      const stillPending = []
 
-      for (const entry of allEntries) {
-        if (entry.type !== 'task' || completed.has(entry.id)) continue
+      for (const entry of pendingTasks) {
+        if (completed.has(entry.id)) continue
         if (entry.taskType === 'shell') {
-          if (!ALLOW_SHELL || !entry.cmd) continue
+          if (!ALLOW_SHELL || !entry.cmd) { stillPending.push(entry); continue }
         } else {
           if (!entry.code) continue
         }
@@ -257,7 +263,7 @@ async function processTasks () {
         // Block on unresolved dependencies
         if (entry.dependsOn && entry.dependsOn.length > 0) {
           const missing = entry.dependsOn.filter(id => !resultIndex.has(id))
-          if (missing.length > 0) { resetIdleTimer(); continue }
+          if (missing.length > 0) { resetIdleTimer(); stillPending.push(entry); continue }
         }
 
         // Collect dep outputs in order for injection
@@ -270,12 +276,16 @@ async function processTasks () {
 
         if (usePool) {
           // Only grab as many pool tasks as we have free threads
-          if (poolBatch.length >= freeThreads) continue
+          if (poolBatch.length >= freeThreads) { stillPending.push(entry); continue }
           poolBatch.push({ entry, deps })
         } else {
           mainBatch.push({ entry, deps })
         }
       }
+
+      // Replace pending list with tasks we didn't dispatch this cycle
+      pendingTasks.length = 0
+      pendingTasks.push(...stillPending)
 
       // Nothing to do this cycle — break out of re-scan loop
       if (poolBatch.length === 0 && mainBatch.length === 0) break
@@ -417,19 +427,7 @@ async function processTasks () {
 
   // If we did work and nothing left, check for other requesters immediately
   if (didWork && base) {
-    let hasRemainingTasks = false
-    for (let i = 0; i < base.view.length; i++) {
-      const entry = await base.view.get(i)
-      if (entry.type !== 'task') continue
-      if (entry.taskType === 'shell' ? (!ALLOW_SHELL || !entry.cmd) : !entry.code) continue
-      if (entry.assignedTo && entry.assignedTo !== workerId) continue
-      if (entry.requires && !meetsRequirements(entry.requires, myCapabilities)) continue
-      if (completed.has(entry.id)) continue
-      hasRemainingTasks = true
-      break
-    }
-
-    if (!hasRemainingTasks) {
+    if (pendingTasks.length === 0) {
       let betterOption = false
       for (const [id, info] of availableRequesters) {
         if (id !== currentRequester && info.pendingTasks > 0 && Date.now() - info.ts < 30000 && canHelpRequester(info)) {
