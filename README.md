@@ -141,8 +141,32 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 | Sum array | `jobs/sum-job.js` | Splits 1000 numbers, sums in parallel, joins |
 | Find primes | `jobs/primes-job.js` | Splits range, sieves in parallel, merges sorted |
 | Mandelbrot | `jobs/mandelbrot-job.js` | Splits image into row chunks, renders in parallel, assembles ASCII art |
+| Image transform | `jobs/image-transform-job.js` | Splits an image into a grid of blocks, applies a different filter (grayscale, sepia, invert, warm, cool, etc.) per block, reassembles into a single output image with live preview |
+| Wave-front DAG | `jobs/wave-dag-job.js` | NxN grid of tasks where each cell depends on its top and left neighbor. Tasks execute in diagonal wavefronts — all cells on the same anti-diagonal run in parallel. Produces a color-gradient image and a live DAG visualization |
 | GPU benchmark | `jobs/gpu-benchmark-job.js` | Splits matrix sizes across workers, benchmarks GPU via PyTorch |
 | Statistics (Python) | `jobs/stats-task.js` + `jobs/stats.py` | Computes sum/count/min/max/mean on data via Python subprocess |
+
+#### Running the image transform job
+
+Requires `img.png` in the `app/` directory and ImageMagick installed on the requester.
+
+```bash
+# In the requester prompt:
+# 8 rows x 6 columns = 48 grid blocks, each with a different filter
+job jobs/image-transform-job.js 8 6
+```
+
+A live preview opens at `http://localhost:7842` — blocks fill in as workers complete them.
+
+#### Running the wave-front DAG job
+
+```bash
+# In the requester prompt:
+# 6x6 grid, 80px cells, 250ms delay per task
+job jobs/wave-dag-job.js 6 80 250
+```
+
+Opens a live preview with two panels: the color image building up and a DAG graph showing blocked (blue), ready (orange), and done (green) tasks propagating diagonally.
 
 ### Tests & Demos
 | File | What it tests |
