@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PeerCompute</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- Titlebar -->
+<div id="titlebar">
+  <div class="logo"><span>⚡</span> Peer<span>Compute</span></div>
+  <div class="mode-tabs">
+    <button class="mode-tab active" data-mode="requester">Requester</button>
+    <button class="mode-tab" data-mode="worker">Worker</button>
+  </div>
+  <div class="network-badge">
+    <div class="dot" id="net-dot"></div>
+    <span id="net-label">Offline</span>
+  </div>
+</div>
+
+<!-- ══════════════ REQUESTER VIEW ══════════════ -->
+<div id="view-requester" class="mode-view active">
+
+  <div class="view-sidebar">
+
+    <!-- Launch card -->
+    <div class="sidebar-section launch-card">
+      <div class="section-title">Requester</div>
+      <p class="launch-hint">Start the requester to begin distributing tasks.</p>
+      <div class="launch-btn-row">
+        <button class="btn-launch" id="btn-launch-requester">&#9654; Start Request</button>
+        <button class="btn-stop" id="btn-stop-requester" style="display:none">&#9632; Stop</button>
+      </div>
+    </div>
+
+    <!-- Settings (collapsible) -->
+    <div class="sidebar-section" id="req-settings-section">
+      <div class="section-title settings-toggle" id="req-settings-toggle">Settings <span id="req-settings-arrow">&#9654;</span></div>
+      <div id="req-settings-body" style="display:none">
+        <div class="launch-settings">
+          <div class="setting-row setting-row--col">
+            <span class="setting-label">Default hardware</span>
+            <select class="setting-select" id="req-default-hw">
+              <option value="any">Any hardware</option>
+              <option value="cpu">CPU only</option>
+              <option value="gpu-preferred">GPU preferred</option>
+              <option value="gpu-required">GPU required</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <span class="setting-label">Default timeout (s)</span>
+            <input class="setting-num" type="number" id="req-default-timeout" min="5" max="3600" value="60" />
+          </div>
+          <div class="setting-row setting-row--col">
+            <span class="setting-label">Bootstrap node</span>
+            <input type="text" id="req-bootstrap-node" class="input-path" placeholder="host:port (leave blank for public DHT)" style="width:100%;margin-top:4px" />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats (hidden until launched) -->
+    <div class="sidebar-section" id="req-stats-section" style="display:none">
+      <div class="section-title">Stats</div>
+      <div class="stat-row"><span class="stat-label">Requester ID</span><span class="stat-value mono" id="stat-req-id">&mdash;</span></div>
+      <div class="stat-row"><span class="stat-label">Workers</span><span class="stat-value accent" id="stat-workers">0</span></div>
+      <div class="stat-row"><span class="stat-label">Pending tasks</span><span class="stat-value" id="stat-pending">0</span></div>
+      <div class="stat-row"><span class="stat-label">Results</span><span class="stat-value green" id="stat-results">0</span></div>
+      <div class="stat-row"><span class="stat-label">Reputation</span><span class="stat-value" id="stat-rep">0</span></div>
+    </div>
+
+    <!-- Peer graph (hidden until launched) -->
+    <div class="sidebar-section" id="req-graph-section" style="display:none">
+      <div class="section-title">Peer Network</div>
+      <svg id="peer-graph" viewBox="0 0 232 120"></svg>
+    </div>
+
+    <!-- Connected workers (hidden until launched) -->
+    <div class="sidebar-section sidebar-section--flex" id="req-workers-section" style="display:none">
+      <div class="section-title">Connected Workers</div>
+      <div id="worker-list">
+        <div class="empty-state" style="padding:12px 0"><div class="es-sub">No workers yet</div></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="view-content">
+    <div class="content-header">
+      <div class="content-tabs" id="req-tabs">
+        <div class="ctab active" data-tab="req-tasks">Task Queue</div>
+        <div class="ctab" data-tab="req-cli">CLI</div>
+        <div class="ctab" data-tab="req-schedule">Schedule</div>
+      </div>
+      <button class="log-toggle-btn" id="req-log-toggle">Log</button>
+    </div>
+
+    <!-- Log terminal (hidden by default) -->
+    <div class="log-terminal" id="req-log-terminal" style="display:none">
+      <div class="log-terminal-bar">
+        <span class="log-terminal-title">Requester Log</span>
+        <button class="log-terminal-close" id="req-log-close">&times;</button>
+      </div>
+      <div class="log-list" id="req-log-list"></div>
+    </div>
+
+    <!-- Task Queue -->
+    <div class="tab-pane active" id="tab-req-tasks">
+      <div class="tq-filter-bar">
+        <button class="tq-filter active" data-filter="queue">Queue <span class="tq-count" id="tq-count-queue">0</span></button>
+        <button class="tq-filter" data-filter="running">Running <span class="tq-count" id="tq-count-running">0</span></button>
+        <button class="tq-filter" data-filter="history">History <span class="tq-count" id="tq-count-history">0</span></button>
+      </div>
+      <div id="task-list-wrap">
+        <div class="empty-state" id="task-empty">
+          <div class="es-icon">&#128203;</div>
+          <div class="es-title">No tasks yet</div>
+          <div class="es-sub">Submit a task using the CLI</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CLI -->
+    <div class="tab-pane" id="tab-req-cli">
+      <div class="cli-pane">
+        <div class="cli-output" id="cli-output"></div>
+        <div class="cli-input-row">
+          <span class="cli-prompt">&gt;</span>
+          <input type="text" id="cli-input" class="cli-input-field" placeholder='run <code>  shell <cmd>  job <path>  upload <localPath>  help' autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Schedule -->
+    <div class="tab-pane" id="tab-req-schedule">
+      <div class="schedule-pane">
+
+        <div class="schedule-section">
+          <div class="schedule-heading">
+            <span class="schedule-icon">&#128451;</span>
+            <div>
+              <div class="schedule-title">Data Files</div>
+              <div class="schedule-sub">CSV, JSON, images, binary &mdash; uploaded to the shared Hyperdrive for workers</div>
+            </div>
+          </div>
+          <div class="drop-zone-upload" id="drop-data">
+            <div class="drop-icon">&#128194;</div>
+            <div class="drop-title">Drop data files here</div>
+            <div class="drop-sub">Or click to browse (multiple files)</div>
+          </div>
+          <input type="file" id="file-data-input" multiple style="display:none" />
+          <ul class="data-file-list" id="data-file-list"></ul>
+        </div>
+
+        <div class="schedule-section">
+          <div class="schedule-heading">
+            <span class="schedule-icon">&#128220;</span>
+            <div>
+              <div class="schedule-title">Job Script</div>
+              <div class="schedule-sub">.js file that exports data, split(data,n), compute(chunk), join(results)</div>
+            </div>
+          </div>
+          <div class="drop-zone-upload" id="drop-script">
+            <div class="drop-icon">&#128221;</div>
+            <div class="drop-title">Drop .js script here</div>
+            <div class="drop-sub">Or click to browse</div>
+          </div>
+          <input type="file" id="file-script-input" accept=".js" style="display:none" />
+          <div id="script-info" style="display:none">
+            <div class="data-file-item" id="script-item">
+              <span class="dfi-name" id="script-name-label"></span>
+              <span class="dfi-status uploaded">ready</span>
+              <button class="btn-file-delete" id="btn-remove-script">&times;</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="schedule-section">
+          <div class="schedule-heading-inline">
+            <span class="setting-label">Chunks (workers)</span>
+            <input class="setting-num" type="number" id="schedule-chunks" min="1" max="128" placeholder="auto" style="width:70px" />
+          </div>
+          <div class="schedule-heading-inline" style="margin-top:8px">
+            <span class="setting-label">Job arguments</span>
+            <input type="text" id="schedule-args" class="input-path" placeholder="e.g. 512 512 (passed to split)" style="width:160px" />
+          </div>
+        </div>
+
+        <div class="schedule-actions">
+          <button class="btn-run" id="btn-upload-all" disabled>&#11014; Upload Data</button>
+          <button class="btn-run" id="btn-run-script" disabled>&#9654; Run Job</button>
+          <button class="btn-stop-small" id="btn-clear-all">Clear All</button>
+          <span class="schedule-status" id="schedule-status"></span>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════════ WORKER VIEW ══════════════ -->
+<div id="view-worker" class="mode-view" style="display:none">
+
+  <div class="view-sidebar">
+
+    <!-- Launch card -->
+    <div class="sidebar-section launch-card">
+      <div class="section-title">Worker Settings</div>
+      <div class="launch-settings">
+        <div class="setting-row setting-row--col">
+          <span class="setting-label">Compute hardware</span>
+          <select class="setting-select" id="wkr-hw">
+            <option value="cpu">CPU only</option>
+            <option value="cpu+gpu" selected>CPU + GPU</option>
+            <option value="gpu">GPU accelerated</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">Threads</span>
+          <input class="setting-num" type="number" id="wkr-threads" min="1" max="64" value="4" />
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">Allow shell</span>
+          <label class="toggle"><input type="checkbox" id="wkr-allow-shell"><span class="slider"></span></label>
+        </div>
+        <div class="setting-row setting-row--col">
+          <span class="setting-label">Bootstrap node</span>
+          <input type="text" id="wkr-bootstrap-node" class="input-path" placeholder="host:port (leave blank for public DHT)" style="width:100%;margin-top:4px" />
+        </div>
+      </div>
+      <div class="launch-btn-row">
+        <button class="btn-launch" id="btn-launch-worker">&#9654; Launch Worker</button>
+        <button class="btn-stop" id="btn-stop-worker" style="display:none">&#9632; Stop</button>
+      </div>
+      <p class="launch-hint launch-hint--warn">One worker per machine. Settings are locked after launch.</p>
+    </div>
+
+    <!-- Detected capabilities (shown after detection) -->
+    <div class="sidebar-section" id="wkr-caps-section" style="display:none">
+      <div class="section-title">Detected Hardware</div>
+      <div class="worker-self">
+        <div class="ws-row"><span>CPU Cores</span><span id="cap-cpu-cores">&mdash;</span></div>
+        <div class="ws-row"><span>RAM</span><span id="cap-ram">&mdash;</span></div>
+        <div class="ws-row"><span>GPU</span><span id="cap-gpu-name">&mdash;</span></div>
+        <div class="ws-row"><span>GPU type</span><span id="cap-gpu-type">&mdash;</span></div>
+        <div class="ws-row"><span>Platform</span><span id="cap-platform">&mdash;</span></div>
+      </div>
+    </div>
+
+    <!-- Worker self panel (hidden until launched) -->
+    <div class="sidebar-section" id="wkr-self-section" style="display:none">
+      <div class="section-title">This Node</div>
+      <div class="worker-self">
+        <div class="ws-row"><span>Status</span><span id="ws-status">Idle</span></div>
+        <div class="ws-row"><span>Connected to</span><span id="ws-requester">&mdash;</span></div>
+        <div class="ws-row"><span>Tasks done</span><span id="ws-tasks">0</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="view-content">
+    <div class="content-header">
+      <div class="content-tabs" id="wkr-tabs">
+        <div class="ctab active" data-tab="wkr-activity">Activity</div>
+      </div>
+      <button class="log-toggle-btn" id="wkr-log-toggle">Log</button>
+    </div>
+
+    <!-- Worker log terminal (hidden by default) -->
+    <div class="log-terminal" id="wkr-log-terminal" style="display:none">
+      <div class="log-terminal-bar">
+        <span class="log-terminal-title">Worker Log</span>
+        <button class="log-terminal-close" id="wkr-log-close">&times;</button>
+      </div>
+      <div class="log-list" id="wkr-log-list"></div>
+    </div>
+
+    <div class="tab-pane active" id="tab-wkr-activity">
+      <div id="wkr-activity-list">
+        <div class="empty-state" id="wkr-activity-empty">
+          <div class="es-icon">&#9881;</div>
+          <div class="es-title">Worker ready</div>
+          <div class="es-sub">Launch worker to start. Activity will appear here.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Stop confirmation modal -->
+<div id="stop-modal" style="display:none">
+  <div class="modal-backdrop"></div>
+  <div class="modal-box">
+    <div class="modal-title">&#9888; Stop process?</div>
+    <div class="modal-body" id="stop-modal-body">Are you sure you want to stop?</div>
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" id="stop-modal-cancel">Keep Running</button>
+      <button class="btn-modal-confirm" id="stop-modal-confirm">Terminate &amp; Stop</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
