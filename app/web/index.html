@@ -144,7 +144,7 @@
             <span class="schedule-icon">&#128451;</span>
             <div>
               <div class="schedule-title">Data Files</div>
-              <div class="schedule-sub">CSV, JSON, binary &mdash; multiple files, optional</div>
+              <div class="schedule-sub">CSV, JSON, images, binary &mdash; uploaded to the shared Hyperdrive for workers</div>
             </div>
           </div>
           <div class="drop-zone-upload" id="drop-data">
@@ -160,22 +160,36 @@
           <div class="schedule-heading">
             <span class="schedule-icon">&#128220;</span>
             <div>
-              <div class="schedule-title">Script File</div>
-              <div class="schedule-sub">.js job definition &mdash; must export data, split, compute, join</div>
+              <div class="schedule-title">Job Script</div>
+              <div class="schedule-sub">.js file that exports data, split(data,n), compute(chunk), join(results)</div>
             </div>
           </div>
           <div class="drop-zone-upload" id="drop-script">
             <div class="drop-icon">&#128221;</div>
             <div class="drop-title">Drop .js script here</div>
             <div class="drop-sub">Or click to browse</div>
-            <div class="drop-file" id="drop-script-name" style="display:none"></div>
           </div>
           <input type="file" id="file-script-input" accept=".js" style="display:none" />
+          <div id="script-info" style="display:none">
+            <div class="data-file-item" id="script-item">
+              <span class="dfi-name" id="script-name-label"></span>
+              <span class="dfi-status uploaded">ready</span>
+              <button class="btn-file-delete" id="btn-remove-script">&times;</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="schedule-section">
+          <div class="schedule-heading-inline">
+            <span class="setting-label">Chunks (workers)</span>
+            <input class="setting-num" type="number" id="schedule-chunks" min="1" max="128" placeholder="auto" style="width:70px" />
+          </div>
         </div>
 
         <div class="schedule-actions">
-          <button class="btn-run" id="btn-upload-all" disabled>&#11014; Upload All</button>
-          <button class="btn-run" id="btn-run-script" disabled>&#9654; Run Script</button>
+          <button class="btn-run" id="btn-upload-all" disabled>&#11014; Upload Data</button>
+          <button class="btn-run" id="btn-run-script" disabled>&#9654; Run Job</button>
+          <button class="btn-stop-small" id="btn-clear-all">Clear All</button>
           <span class="schedule-status" id="schedule-status"></span>
         </div>
 

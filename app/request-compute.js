@@ -31,8 +31,19 @@ let previewServer = null
 let previewPngFile = null
 
 function startPreviewServer (pngFile, dagMeta) {
-  if (previewServer) return // already running
+  // Delete old output files so preview starts blank
+  try { fs.unlinkSync(pngFile) } catch {}
+  try { fs.unlinkSync(pngFile.replace('.png', '.ppm')) } catch {}
+
   previewPngFile = pngFile
+
+  if (previewServer) {
+    // Reset meta and re-open the page
+    previewServer.meta(0, 0)
+    if (previewServer.dag) previewServer.dag(null)
+    try { execSync('open http://localhost:7842') } catch {}
+    return
+  }
 
   const hasDag = !!dagMeta
 

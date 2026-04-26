@@ -26,6 +26,7 @@ const state = {
   workerStatus: { searching: true, currentRequester: null, totalTasksDone: 0 },
   scheduleDataFiles: [],
   scheduleScriptName: null,
+  scheduleScriptFile: null,
   cmdHistory: [],
   cmdHistoryPos: -1
 }
@@ -451,8 +452,9 @@ function syncUIState () {
 $('btn-launch-requester').addEventListener('click', async () => {
   if (state.requesterLaunched) return
   const bootstrapNode = $('req-bootstrap-node').value.trim() || undefined
-  $('btn-launch-requester').textContent = 'Starting...'
-  $('btn-launch-requester').disabled = true
+  $('btn-launch-requester').style.display = 'none'
+  $('btn-stop-requester').style.display = ''
+  state.requesterLaunched = true
   await api('start-requester', { bootstrapNode })
 })
 
@@ -466,11 +468,12 @@ $('btn-launch-worker').addEventListener('click', async () => {
   const threads = parseInt($('wkr-threads').value) || 4
   const allowShell = $('wkr-allow-shell').checked
   const bootstrapNode = $('wkr-bootstrap-node').value.trim() || undefined
-  $('btn-launch-worker').textContent = 'Launching...'
-  $('btn-launch-worker').disabled = true
+  $('btn-launch-worker').style.display = 'none'
+  $('btn-stop-worker').style.display = ''
   $('wkr-hw').disabled = true
   $('wkr-threads').disabled = true
   $('wkr-allow-shell').disabled = true
+  state.workerLaunched = true
   await api('start-worker', { threads, allowShell, bootstrapNode })
 })
 
@@ -567,20 +570,31 @@ const fileDataInput = $('file-data-input')
 const dropScriptZone  = $('drop-script')
 const fileScriptInput = $('file-script-input')
 
+function formatSize (bytes) {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
 function updateScheduleButtons () {
-  const hasData   = state.scheduleDataFiles.length > 0
+  const hasData = state.scheduleDataFiles.length > 0
   const hasScript = !!state.scheduleScriptName
-  $('btn-upload-all').disabled = !hasData && !hasScript
-  $('btn-run-script').disabled = !hasScript
+  const allUploaded = !hasData || state.scheduleDataFiles.every(f => f.status === 'uploaded')
+  $('btn-upload-all').disabled = !hasData || allUploaded
+  $('btn-run-script').disabled = !hasScript || !state.requesterLaunched
   const statusEl = $('schedule-status')
-  if (!hasScript) {
+  if (!hasScript && !hasData) {
     statusEl.textContent = ''
-  } else if (!hasData) {
+  } else if (hasScript && allUploaded) {
+    statusEl.textContent = state.requesterLaunched ? 'Ready to run' : 'Start requester first'
+    statusEl.style.color = state.requesterLaunched ? 'var(--green)' : 'var(--yellow)'
+  } else if (hasData && !allUploaded) {
+    const done = state.scheduleDataFiles.filter(f => f.status === 'uploaded').length
+    statusEl.textContent = `${done}/${state.scheduleDataFiles.length} data files uploaded`
+    statusEl.style.color = 'var(--text3)'
+  } else if (hasScript) {
     statusEl.textContent = 'Ready to run (script only)'
     statusEl.style.color = 'var(--green)'
-  } else {
-    statusEl.textContent = `${state.scheduleDataFiles.length} data file(s) selected`
-    statusEl.style.color = 'var(--text3)'
   }
 }
 
@@ -590,19 +604,54 @@ function renderDataFileList () {
   for (const entry of state.scheduleDataFiles) {
     const li = document.createElement('li')
     li.className = 'data-file-item'
-    li.innerHTML = `<span class="dfi-name">${escHtml(entry.name)}</span><span class="dfi-status">ready</span>`
+    const statusClass = entry.status === 'uploaded' ? 'uploaded' : entry.status === 'uploading' ? 'uploading' : entry.status === 'error' ? 'error' : ''
+    const statusLabel = entry.status === 'uploaded' ? 'uploaded' : entry.status === 'uploading' ? 'uploading...' : entry.status === 'error' ? 'failed' : 'pending'
+    li.innerHTML = `
+      <span class="dfi-name">${escHtml(entry.name)}</span>
+      <span class="dfi-size">${formatSize(entry.size || 0)}</span>
+      <span class="dfi-status ${statusClass}">${statusLabel}</span>
+      <button class="btn-file-delete" data-name="${escHtml(entry.name)}" data-type="data">&times;</button>
+    `
     ul.appendChild(li)
   }
+  ul.querySelectorAll('.btn-file-delete').forEach(btn => {
+    btn.addEventListener('click', () => removeDataFile(btn.dataset.name))
+  })
+}
+
+async function uploadFile (file, type) {
+  const res = await fetch(`/api/upload?name=${encodeURIComponent(file.name)}&type=${type}`, {
+    method: 'POST',
+    body: file
+  })
+  return res.json()
 }
 
 function addDataFiles (files) {
   for (const file of files) {
     if (!state.scheduleDataFiles.find(f => f.name === file.name)) {
-      state.scheduleDataFiles.push({ name: file.name, file })
+      state.scheduleDataFiles.push({ name: file.name, file, size: file.size, status: 'pending' })
     }
   }
   renderDataFileList()
   updateScheduleButtons()
+}
+
+function removeDataFile (name) {
+  const idx = state.scheduleDataFiles.findIndex(f => f.name === name)
+  if (idx !== -1) {
+    const entry = state.scheduleDataFiles[idx]
+    state.scheduleDataFiles.splice(idx, 1)
+    if (entry.status === 'uploaded') {
+      fetch('/api/delete-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, type: 'data' })
+      })
+    }
+    renderDataFileList()
+    updateScheduleButtons()
+  }
 }
 
 dropDataZone.addEventListener('click', () => fileDataInput.click())
@@ -613,7 +662,10 @@ dropDataZone.addEventListener('drop', e => {
   dropDataZone.classList.remove('drag-over')
   addDataFiles([...e.dataTransfer.files])
 })
-fileDataInput.addEventListener('change', e => { if (e.target.files.length) addDataFiles([...e.target.files]) })
+fileDataInput.addEventListener('change', e => {
+  if (e.target.files.length) addDataFiles([...e.target.files])
+  e.target.value = ''
+})
 
 dropScriptZone.addEventListener('click', () => fileScriptInput.click())
 dropScriptZone.addEventListener('dragover', e => { e.preventDefault(); dropScriptZone.classList.add('drag-over') })
@@ -625,29 +677,103 @@ dropScriptZone.addEventListener('drop', e => {
   if (file && file.name.endsWith('.js')) selectScriptFile(file)
   else showToast('Please drop a .js file', 'error')
 })
-fileScriptInput.addEventListener('change', e => { if (e.target.files[0]) selectScriptFile(e.target.files[0]) })
+fileScriptInput.addEventListener('change', e => {
+  if (e.target.files[0]) selectScriptFile(e.target.files[0])
+  e.target.value = ''
+})
 
-function selectScriptFile (file) {
+async function selectScriptFile (file) {
   state.scheduleScriptName = file.name
-  $('drop-script-name').textContent = file.name
-  $('drop-script-name').style.display = 'block'
-  dropScriptZone.querySelector('.drop-title').textContent = file.name
-  dropScriptZone.querySelector('.drop-sub').textContent = 'Click to change'
+  state.scheduleScriptFile = file
+
+  $('script-info').style.display = ''
+  $('script-name-label').textContent = `${file.name} (${formatSize(file.size)})`
+  dropScriptZone.querySelector('.drop-title').textContent = 'Script selected'
+  dropScriptZone.querySelector('.drop-sub').textContent = 'Drop another to replace'
+
+  const result = await uploadFile(file, 'script')
+  if (result.ok) {
+    showToast(`Script saved: ${file.name}`, 'success')
+  } else {
+    showToast(`Script upload failed: ${result.error}`, 'error')
+  }
   updateScheduleButtons()
 }
 
-$('btn-upload-all').addEventListener('click', async () => {
-  for (const entry of state.scheduleDataFiles) {
-    await api('command', { command: `upload ${entry.name}` })
+$('btn-remove-script').addEventListener('click', () => {
+  if (state.scheduleScriptName) {
+    fetch('/api/delete-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: state.scheduleScriptName, type: 'script' })
+    })
   }
-  showToast('Upload commands sent')
+  state.scheduleScriptName = null
+  state.scheduleScriptFile = null
+  $('script-info').style.display = 'none'
+  dropScriptZone.querySelector('.drop-title').textContent = 'Drop .js script here'
+  dropScriptZone.querySelector('.drop-sub').textContent = 'Or click to browse'
+  updateScheduleButtons()
+})
+
+$('btn-upload-all').addEventListener('click', async () => {
+  const pending = state.scheduleDataFiles.filter(f => f.status !== 'uploaded')
+  if (pending.length === 0) return
+
+  for (const entry of pending) {
+    entry.status = 'uploading'
+    renderDataFileList()
+    try {
+      const result = await uploadFile(entry.file, 'data')
+      entry.status = result.ok ? 'uploaded' : 'error'
+    } catch {
+      entry.status = 'error'
+    }
+    renderDataFileList()
+    updateScheduleButtons()
+  }
+  const ok = pending.filter(f => f.status === 'uploaded').length
+  const fail = pending.filter(f => f.status === 'error').length
+  if (fail > 0) {
+    showToast(`Uploaded ${ok}, failed ${fail}`, 'error')
+  } else {
+    showToast(`${ok} file(s) uploaded`, 'success')
+  }
 })
 
 $('btn-run-script').addEventListener('click', async () => {
   if (!state.scheduleScriptName) { showToast('Select a script first', 'error'); return }
-  await api('command', { command: `job jobs/${state.scheduleScriptName}` })
-  showToast('Job submitted')
-  document.querySelector('.ctab[data-tab="req-tasks"]').click()
+  if (!state.requesterLaunched) { showToast('Start the requester first', 'error'); return }
+  const chunks = $('schedule-chunks').value ? parseInt($('schedule-chunks').value) : null
+  const result = await fetch('/api/run-job', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ script: state.scheduleScriptName, chunks })
+  }).then(r => r.json())
+  if (result.ok) {
+    showToast('Job submitted!', 'success')
+    document.querySelector('.ctab[data-tab="req-tasks"]').click()
+  } else {
+    showToast(`Job failed: ${result.error}`, 'error')
+  }
+})
+
+$('btn-clear-all').addEventListener('click', () => {
+  for (const entry of state.scheduleDataFiles) {
+    if (entry.status === 'uploaded') {
+      fetch('/api/delete-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: entry.name, type: 'data' })
+      })
+    }
+  }
+  state.scheduleDataFiles = []
+  renderDataFileList()
+  $('btn-remove-script').click()
+  $('schedule-chunks').value = ''
+  updateScheduleButtons()
+  showToast('Schedule cleared')
 })
 
 // ── Stop modal ──

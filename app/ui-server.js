@@ -7,7 +7,11 @@ import { spawn } from 'child_process'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const WEB_DIR = path.join(__dirname, 'web')
+const UPLOAD_DIR = path.join(__dirname, 'uploads')
+const JOBS_DIR = path.join(__dirname, 'jobs')
 const PORT = Number(process.env.PORT) || 7843
+
+fs.mkdirSync(UPLOAD_DIR, { recursive: true })
 
 const MIME = {
   '.html': 'text/html',
@@ -182,10 +186,17 @@ function parseWorkerLine (line) {
 
   if (s.includes('Thread pool:')) {
     const match = s.match(/Thread pool:\s*(\d+)/)
-    if (match && state.workerCaps) {
+    if (match) {
+      if (!state.workerCaps) state.workerCaps = {}
       state.workerCaps.poolSize = parseInt(match[1])
     }
     addLog('worker', s, 'info')
+    return
+  }
+
+  if (s.includes('Listening for requesters')) {
+    broadcast('worker-ready', { status: 'online' })
+    addLog('worker', s, 'success')
     return
   }
 
@@ -328,6 +339,12 @@ function startRequester (opts = {}) {
 function stopRequester () {
   if (!requesterProc) return { error: 'Not running' }
   requesterProc.kill('SIGINT')
+  const proc = requesterProc
+  setTimeout(() => {
+    if (proc && !proc.killed) {
+      try { proc.kill('SIGKILL') } catch {}
+    }
+  }, 5000)
   return { ok: true }
 }
 
@@ -375,6 +392,12 @@ function startWorker (opts = {}) {
 function stopWorker () {
   if (!workerProc) return { error: 'Not running' }
   workerProc.kill('SIGINT')
+  const proc = workerProc
+  setTimeout(() => {
+    if (proc && !proc.killed) {
+      try { proc.kill('SIGKILL') } catch {}
+    }
+  }, 5000)
   return { ok: true }
 }
 
@@ -392,6 +415,15 @@ function readBody (req) {
     req.on('end', () => {
       try { resolve(JSON.parse(body)) } catch { resolve({}) }
     })
+    req.on('error', reject)
+  })
+}
+
+function readRawBody (req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    req.on('data', c => chunks.push(c))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
     req.on('error', reject)
   })
 }
@@ -467,6 +499,105 @@ const server = http.createServer(async (req, res) => {
     addLog('requester', `> ${body.command}`, 'accent')
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(result))
+    return
+  }
+
+  // Upload a file (data or script)
+  if (pathname === '/api/upload' && req.method === 'POST') {
+    const fileName = decodeURIComponent(url.searchParams.get('name') || '')
+    const fileType = url.searchParams.get('type') || 'data'
+    if (!fileName) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Missing name param' }))
+      return
+    }
+    const safeName = path.basename(fileName)
+    const raw = await readRawBody(req)
+
+    if (fileType === 'script') {
+      const dest = path.join(JOBS_DIR, safeName)
+      fs.writeFileSync(dest, raw)
+      addLog('requester', `Script saved: jobs/${safeName}`, 'success')
+      broadcast('file-saved', { name: safeName, type: 'script', size: raw.length })
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, path: `jobs/${safeName}` }))
+    } else {
+      const dest = path.join(UPLOAD_DIR, safeName)
+      fs.writeFileSync(dest, raw)
+      if (requesterProc) {
+        sendToRequester(`upload ${dest} /data/${safeName}`)
+        addLog('requester', `Uploading ${safeName} to shared drive...`, 'accent')
+      }
+      broadcast('file-saved', { name: safeName, type: 'data', size: raw.length })
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, path: dest }))
+    }
+    return
+  }
+
+  // List uploaded files
+  if (pathname === '/api/files' && req.method === 'GET') {
+    const dataFiles = fs.existsSync(UPLOAD_DIR)
+      ? fs.readdirSync(UPLOAD_DIR).map(name => {
+          const stat = fs.statSync(path.join(UPLOAD_DIR, name))
+          return { name, type: 'data', size: stat.size }
+        })
+      : []
+    const scriptFiles = fs.existsSync(JOBS_DIR)
+      ? fs.readdirSync(JOBS_DIR).filter(f => f.endsWith('.js')).map(name => {
+          const stat = fs.statSync(path.join(JOBS_DIR, name))
+          return { name, type: 'script', size: stat.size }
+        })
+      : []
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ data: dataFiles, scripts: scriptFiles }))
+    return
+  }
+
+  // Delete an uploaded file
+  if (pathname === '/api/delete-file' && req.method === 'POST') {
+    const body = await readBody(req)
+    const safeName = path.basename(body.name || '')
+    if (!safeName) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Missing name' }))
+      return
+    }
+    if (body.type === 'script') {
+      const target = path.join(JOBS_DIR, safeName)
+      try { fs.unlinkSync(target) } catch {}
+      addLog('requester', `Script deleted: ${safeName}`, 'warning')
+    } else {
+      const target = path.join(UPLOAD_DIR, safeName)
+      try { fs.unlinkSync(target) } catch {}
+      addLog('requester', `Data file deleted: ${safeName}`, 'warning')
+    }
+    broadcast('file-deleted', { name: safeName, type: body.type })
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true }))
+    return
+  }
+
+  // Run a job script
+  if (pathname === '/api/run-job' && req.method === 'POST') {
+    const body = await readBody(req)
+    const safeName = path.basename(body.script || '')
+    const chunks = body.chunks || null
+    if (!safeName) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Missing script name' }))
+      return
+    }
+    if (!requesterProc) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Requester not running' }))
+      return
+    }
+    const cmd = chunks ? `job jobs/${safeName} ${chunks}` : `job jobs/${safeName}`
+    sendToRequester(cmd)
+    addLog('requester', `> ${cmd}`, 'accent')
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true, command: cmd }))
     return
   }
 

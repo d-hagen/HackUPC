@@ -20,10 +20,10 @@ export class ThreadPool {
   }
 
   async start () {
-    for (let i = 0; i < this.size; i++) {
-      const thread = await this._spawnThread(i)
-      this.workers.push(thread)
-    }
+    const threads = await Promise.all(
+      Array.from({ length: this.size }, (_, i) => this._spawnThread(i))
+    )
+    this.workers.push(...threads)
     console.log(`[pool] Started ${this.size} worker thread(s)`)
   }
 
