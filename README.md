@@ -8,7 +8,7 @@ No servers, no cloud, no blockchain, no tokens — just peers sharing computatio
 
 ## What Is This?
 
-PeerCompute turns idle laptops into a distributed supercomputer. Anyone can **offer** spare CPU power or **request** computation from the network. Peers discover each other automatically via Hyperswarm DHT, exchange tasks through Autobase (a distributed append-only log), and route work based on a reputation system — all without a single server.
+PeerCompute turns idle laptops into a distributed supercomputer. Anyone can **offer** spare CPU/GPU power or **request** computation from the network. Peers discover each other automatically via Hyperswarm DHT, exchange tasks through Autobase (a distributed append-only log), and route work based on a reputation system — all without a single server.
 
 ### Why It Matters
 
