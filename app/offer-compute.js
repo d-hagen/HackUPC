@@ -211,6 +211,10 @@ async function processTasks () {
   const poolPromises = []
 
   try {
+    // Phase 1: scan all entries (async) and collect eligible tasks
+    const poolTasks = []
+    const mainTasks = []
+
     for (let i = 0; i < base.view.length; i++) {
       const entry = await base.view.get(i)
       if (entry.type !== 'task' || completed.has(entry.id)) continue
@@ -222,7 +226,6 @@ async function processTasks () {
       if (entry.assignedTo && entry.assignedTo !== workerId) continue
       if (entry.requires && !meetsRequirements(entry.requires, myCapabilities)) continue
 
-      // Check if result exists
       let hasResult = false
       for (let j = 0; j < base.view.length; j++) {
         const e = await base.view.get(j)
@@ -230,6 +233,69 @@ async function processTasks () {
       }
       if (hasResult) { completed.add(entry.id); continue }
 
+      const needsFiles = entry.code && /\b(readFile|listFiles|writeFile)\b/.test(entry.code)
+      const usePool = entry.taskType !== 'shell' && !needsFiles
+
+      if (usePool) {
+        poolTasks.push(entry)
+      } else {
+        mainTasks.push(entry)
+      }
+    }
+
+    // Phase 2: dispatch all pool tasks synchronously so threads get marked
+    // busy before any can complete and steal the next task
+    for (const entry of poolTasks) {
+      completed.add(entry.id)
+      didWork = true
+      stopIdleTimer()
+
+      const codePreview = entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
+      console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [pool]`)
+      const t0 = performance.now()
+      const taskEntry = entry
+      const p = pool.runTask(taskEntry).then(async ({ output, threadId }) => {
+        const elapsed = (performance.now() - t0).toFixed(2)
+
+        if (!base || !base.writable) {
+          console.log(`[!] Task ${taskEntry.id.slice(0, 8)}… done but lost connection — result dropped`)
+          return
+        }
+
+        const outputFiles = []
+        if (outputDrive) {
+          for await (const f of outputDrive.list('/')) {
+            outputFiles.push(f.key)
+          }
+        }
+
+        await base.append({
+          type: 'result', taskId: taskEntry.id, output,
+          elapsed: Number(elapsed), by: workerId, ts: Date.now(),
+          driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
+          outputFiles: outputFiles.length > 0 ? outputFiles : undefined
+        })
+        tasksDone++
+        totalTasksDone++
+        addDonated(1)
+        const preview = JSON.stringify(output).slice(0, 80)
+        console.log(`[<] Done in ${elapsed}ms | thread #${threadId} | ${preview}`)
+        console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
+      }).catch(async (err) => {
+        if (base && base.writable) {
+          await base.append({
+            type: 'result', taskId: taskEntry.id, error: err.message,
+            by: workerId, ts: Date.now()
+          })
+        }
+        console.log(`[!] Error: ${err.message}\n`)
+      })
+      poolPromises.push(p)
+      resetIdleTimer()
+    }
+
+    // Phase 3: run main-thread tasks sequentially (shell / file-I/O)
+    for (const entry of mainTasks) {
       completed.add(entry.id)
       didWork = true
       stopIdleTimer()
@@ -237,122 +303,70 @@ async function processTasks () {
       const codePreview = entry.taskType === 'shell'
         ? `[SHELL] ${entry.cmd.trim().slice(0, 60)}`
         : entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
+      console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [main]`)
 
-      // Route: pure compute → pool (concurrent), shell/file-I/O → main thread (sequential)
-      const needsFiles = entry.code && /\b(readFile|listFiles|writeFile)\b/.test(entry.code)
-      const usePool = entry.taskType !== 'shell' && !needsFiles
+      let inputDrive = null
+      if (entry.driveKey && store) {
+        if (!mountedDrives.has(entry.driveKey)) {
+          const d = new Hyperdrive(store, Buffer.from(entry.driveKey, 'hex'))
+          await d.ready()
+          mountedDrives.set(entry.driveKey, d)
+        }
+        inputDrive = mountedDrives.get(entry.driveKey)
+        for (let attempt = 0; attempt < 10; attempt++) {
+          await inputDrive.update()
+          if (inputDrive.version > 0) break
+          await new Promise(r => setTimeout(r, 500))
+        }
+      }
 
-      if (usePool) {
-        console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [pool]`)
-        const t0 = performance.now()
-        const taskEntry = entry
-        const p = pool.runTask(taskEntry).then(async ({ output, threadId }) => {
-          const elapsed = (performance.now() - t0).toFixed(2)
+      const t0 = performance.now()
+      try {
+        const output = await executeTask(entry, inputDrive, outputDrive)
+        const elapsed = (performance.now() - t0).toFixed(2)
 
-          // Guard: base may have been closed if idle timer fired during long task
-          if (!base || !base.writable) {
-            console.log(`[!] Task ${taskEntry.id.slice(0, 8)}… done but lost connection — result dropped`)
-            return
+        if (!base || !base.writable) {
+          console.log(`[!] Task ${entry.id.slice(0, 8)}… done but lost connection — result dropped`)
+          continue
+        }
+
+        const outputFiles = []
+        if (outputDrive) {
+          for await (const f of outputDrive.list('/')) {
+            outputFiles.push(f.key)
           }
+        }
 
-          const outputFiles = []
-          if (outputDrive) {
-            for await (const f of outputDrive.list('/')) {
-              outputFiles.push(f.key)
-            }
-          }
-
-          await base.append({
-            type: 'result', taskId: taskEntry.id, output,
-            elapsed: Number(elapsed), by: workerId, ts: Date.now(),
-            driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
-            outputFiles: outputFiles.length > 0 ? outputFiles : undefined
-          })
-          tasksDone++
-          totalTasksDone++
-          addDonated(1)
-          const preview = JSON.stringify(output).slice(0, 80)
-          console.log(`[<] Done in ${elapsed}ms | thread #${threadId} | ${preview}`)
-          console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
-        }).catch(async (err) => {
-          if (base && base.writable) {
-            await base.append({
-              type: 'result', taskId: taskEntry.id, error: err.message,
-              by: workerId, ts: Date.now()
-            })
-          }
-          console.log(`[!] Error: ${err.message}\n`)
+        await base.append({
+          type: 'result', taskId: entry.id, output,
+          elapsed: Number(elapsed), by: workerId, ts: Date.now(),
+          driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
+          outputFiles: outputFiles.length > 0 ? outputFiles : undefined
         })
-        poolPromises.push(p)
-      } else {
-        console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [main]`)
-
-        // Mount requester's drive if task has files
-        let inputDrive = null
-        if (entry.driveKey && store) {
-          if (!mountedDrives.has(entry.driveKey)) {
-            const d = new Hyperdrive(store, Buffer.from(entry.driveKey, 'hex'))
-            await d.ready()
-            mountedDrives.set(entry.driveKey, d)
-          }
-          inputDrive = mountedDrives.get(entry.driveKey)
-          for (let attempt = 0; attempt < 10; attempt++) {
-            await inputDrive.update()
-            if (inputDrive.version > 0) break
-            await new Promise(r => setTimeout(r, 500))
-          }
+        tasksDone++
+        totalTasksDone++
+        addDonated(1)
+        if (entry.taskType === 'shell' && output) {
+          const stdoutPreview = (output.stdout || '').trim().slice(0, 80)
+          console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
+          if (output.timedOut) console.log(`    [!] Process timed out`)
+        } else {
+          const preview = JSON.stringify(output).slice(0, 80)
+          console.log(`[<] Done in ${elapsed}ms | ${preview}`)
         }
-
-        const t0 = performance.now()
-        try {
-          const output = await executeTask(entry, inputDrive, outputDrive)
-          const elapsed = (performance.now() - t0).toFixed(2)
-
-          // Guard: base may have been closed if idle timer fired during long task
-          if (!base || !base.writable) {
-            console.log(`[!] Task ${entry.id.slice(0, 8)}… done but lost connection — result dropped`)
-            continue
-          }
-
-          const outputFiles = []
-          if (outputDrive) {
-            for await (const f of outputDrive.list('/')) {
-              outputFiles.push(f.key)
-            }
-          }
-
+        console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
+      } catch (err) {
+        if (base && base.writable) {
           await base.append({
-            type: 'result', taskId: entry.id, output,
-            elapsed: Number(elapsed), by: workerId, ts: Date.now(),
-            driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
-            outputFiles: outputFiles.length > 0 ? outputFiles : undefined
+            type: 'result', taskId: entry.id, error: err.message,
+            by: workerId, ts: Date.now()
           })
-          tasksDone++
-          totalTasksDone++
-          addDonated(1)
-          if (entry.taskType === 'shell' && output) {
-            const stdoutPreview = (output.stdout || '').trim().slice(0, 80)
-            console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
-            if (output.timedOut) console.log(`    [!] Process timed out`)
-          } else {
-            const preview = JSON.stringify(output).slice(0, 80)
-            console.log(`[<] Done in ${elapsed}ms | ${preview}`)
-          }
-          console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
-        } catch (err) {
-          if (base && base.writable) {
-            await base.append({
-              type: 'result', taskId: entry.id, error: err.message,
-              by: workerId, ts: Date.now()
-            })
-          }
-          console.log(`[!] Error: ${err.message}\n`)
         }
+        console.log(`[!] Error: ${err.message}\n`)
       }
       resetIdleTimer()
     }
 
-    // Wait for all pool tasks dispatched this cycle to finish
     if (poolPromises.length > 0) {
       await Promise.all(poolPromises)
     }
