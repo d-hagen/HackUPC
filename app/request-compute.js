@@ -390,9 +390,20 @@ base.on('update', async () => {
                 const grid = Array.from({ length: fullH }, () => new Array(fullW).fill(null))
                 for (const block of received) {
                   const colOffset = block.startCol ?? 0
+                  // GPU-rendered blocks get a purple tint so you can see which worker used GPU
+                  const isGpu = block.device && !block.device.startsWith('CPU')
                   for (let y = 0; y < block.rows.length; y++) {
                     for (let x = 0; x < block.rows[y].length; x++) {
-                      grid[block.startRow + y][colOffset + x] = block.rows[y][x]
+                      let px = block.rows[y][x]
+                      if (isGpu) {
+                        // blend 30% purple overlay: boost R+B, dim G
+                        px = [
+                          Math.min(255, Math.round(px[0] * 0.7 + 80)),
+                          Math.round(px[1] * 0.7),
+                          Math.min(255, Math.round(px[2] * 0.7 + 80))
+                        ]
+                      }
+                      grid[block.startRow + y][colOffset + x] = px
                     }
                   }
                 }
