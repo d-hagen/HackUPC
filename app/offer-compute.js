@@ -42,7 +42,15 @@ const swarmOpts = BOOTSTRAP
 const discoverySwarm = new Hyperswarm(swarmOpts)
 const replicationSwarm = new Hyperswarm(swarmOpts)
 
+discoverySwarm.on('error', (err) => {
+  console.log(`[!] Discovery swarm error: ${err.message}`)
+})
+replicationSwarm.on('error', (err) => {
+  console.log(`[!] Replication swarm error: ${err.message}`)
+})
+
 replicationSwarm.on('connection', (conn) => {
+  conn.on('error', () => {})
   if (store) store.replicate(conn)
 })
 
@@ -377,7 +385,7 @@ async function processTasks () {
   }
 
   // If we did work and nothing left, check for other requesters immediately
-  if (didWork) {
+  if (didWork && base) {
     let hasRemainingTasks = false
     for (let i = 0; i < base.view.length; i++) {
       const entry = await base.view.get(i)
@@ -451,6 +459,13 @@ function pickBestRequester () {
 discoverySwarm.join(NETWORK_TOPIC, { client: true, server: true })
 
 discoverySwarm.on('connection', (conn) => {
+  conn.on('error', () => {})
+  conn.on('close', () => {
+    for (const [id, info] of availableRequesters) {
+      if (info.conn === conn) { availableRequesters.delete(id); break }
+    }
+  })
+
   conn.on('data', async (data) => {
     try {
       const msg = JSON.parse(data.toString())
