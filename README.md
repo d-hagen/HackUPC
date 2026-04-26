@@ -139,10 +139,10 @@ Pear's showcase apps today are **Keet** (chat/video) and **PearPass** (password 
 
 | Feature | What | Effort |
 |---|---|---|
-| **Worker thread pool** | `worker_threads` for parallel task execution per worker | Medium |
+| **Worker thread pool** | `worker_threads` for parallel task execution per worker | Done |
 | **WASM sandbox** | Execute WASM modules for safe, portable, near-native compute | High |
-| **GPU access (native)** | WebGPU/WGSL or native CUDA passthrough (currently possible via shell + PyTorch) | High |
-| **Streaming results** | Partial/progress updates during long tasks | Low |
+| **GPU via Python execution** | Upload Python files with PyTorch/CUDA deps to workers, execute via JS task subprocess | Medium |
+| **Streaming results** | Partial/progress updates during long tasks | Done |
 | **Task dependencies** | DAG of tasks: B runs only after A completes | Medium |
 
 ### 2. UI & App
