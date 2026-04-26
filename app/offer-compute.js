@@ -218,17 +218,20 @@ async function processTasks () {
   const poolPromises = []
 
   try {
-    // Phase 1: scan log once — build result index and collect dispatchable tasks
+    // Phase 1: scan log once — build result/claim index and collect dispatchable tasks
     const resultIndex = new Map()  // taskId -> output
+    const claimed = new Set()      // taskIds claimed by any worker
     const allEntries = []
     for (let i = 0; i < base.view.length; i++) {
       const e = await base.view.get(i)
       allEntries.push(e)
       if (e.type === 'result') resultIndex.set(e.taskId, e.output)
+      if (e.type === 'claim') claimed.add(e.taskId)
     }
 
     const poolBatch = []   // tasks to dispatch to thread pool at once
     const mainBatch = []   // tasks that need main thread (shell/file-I/O)
+    const freeThreads = pool.available
 
     for (const entry of allEntries) {
       if (entry.type !== 'task' || completed.has(entry.id)) continue
@@ -243,6 +246,9 @@ async function processTasks () {
       // Already has a result
       if (resultIndex.has(entry.id)) { completed.add(entry.id); continue }
 
+      // Already claimed by another worker — skip
+      if (claimed.has(entry.id)) continue
+
       // Block on unresolved dependencies
       if (entry.dependsOn && entry.dependsOn.length > 0) {
         const missing = entry.dependsOn.filter(id => !resultIndex.has(id))
@@ -254,19 +260,24 @@ async function processTasks () {
         ? entry.dependsOn.map(id => resultIndex.get(id))
         : []
 
-      completed.add(entry.id)
-
       const needsFiles = entry.code && /\b(readFile|listFiles|writeFile)\b/.test(entry.code)
       const usePool = entry.taskType !== 'shell' && !needsFiles
 
       if (usePool) {
+        // Only grab as many pool tasks as we have free threads
+        if (poolBatch.length >= freeThreads) continue
         poolBatch.push({ entry, deps })
       } else {
         mainBatch.push({ entry, deps })
       }
     }
 
-    // Phase 2: dispatch all pool tasks at once so _drain spreads across threads
+    // Phase 2: write claims for all tasks we're about to execute, then dispatch
+    for (const { entry } of [...poolBatch, ...mainBatch]) {
+      completed.add(entry.id)
+      await base.append({ type: 'claim', taskId: entry.id, by: workerId, ts: Date.now() })
+    }
+
     for (const { entry, deps } of poolBatch) {
       didWork = true
       stopIdleTimer()
