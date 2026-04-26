@@ -31,10 +31,15 @@ let previewServer = null
 let previewPngFile = null
 
 function startPreviewServer (pngFile, dagMeta) {
-  if (previewServer) return // already running
   previewPngFile = pngFile
+  // If server already running just update the png path and return — HTML already served
+  if (previewServer) {
+    previewServer.meta(0, 0)
+    previewServer.dag({ tasks: [], N: 0 })
+    return
+  }
 
-  const hasDag = !!dagMeta
+  const hasDag = true // always render DAG panel — it hides itself when no data
 
   const html = `<!DOCTYPE html>
 <html>
@@ -42,10 +47,10 @@ function startPreviewServer (pngFile, dagMeta) {
 <title>PeerCompute — Live Render</title>
 <style>
   * { box-sizing: border-box; }
-  body { margin: 0; background: #111; display: flex; flex-direction: ${hasDag ? 'row' : 'column'}; align-items: ${hasDag ? 'flex-start' : 'center'}; justify-content: center; min-height: 100vh; font-family: monospace; color: #aaa; gap: 32px; padding: 24px; }
+  body { margin: 0; background: #111; display: flex; flex-direction: row; align-items: flex-start; justify-content: center; min-height: 100vh; font-family: monospace; color: #aaa; gap: 32px; padding: 24px; }
   .panel { display: flex; flex-direction: column; align-items: center; }
   h2 { margin: 0 0 12px; font-size: 13px; letter-spacing: 2px; color: #555; }
-  img { display: block; max-width: ${hasDag ? '50vw' : '90vw'}; max-height: 85vh; image-rendering: pixelated; border: 1px solid #333; }
+  img { display: block; max-width: 50vw; max-height: 85vh; image-rendering: pixelated; border: 1px solid #333; }
   #status { margin-top: 10px; font-size: 12px; color: #444; }
   #dag-wrap { position: relative; }
   canvas { border: 1px solid #333; background: #0a0a0a; }
@@ -57,10 +62,10 @@ function startPreviewServer (pngFile, dagMeta) {
   <img id="img" src="/image?t=0" />
   <div id="status">waiting for chunks…</div>
 </div>
-${hasDag ? `<div class="panel">
+<div class="panel" id="dag-panel" style="display:none">
   <h2>TASK DEPENDENCY GRAPH</h2>
   <div id="dag-wrap"><canvas id="dag"></canvas></div>
-</div>` : ''}
+</div>
 <script>
   let t = 0
   let chunks = 0
@@ -80,30 +85,25 @@ ${hasDag ? `<div class="panel">
     document.getElementById('img').src = '/image?t=' + t
   }, 500)
 
-${hasDag ? `
-  const N = ${dagMeta.N}
+
   const CELL = 72
   const PAD = 36
   const canvas = document.getElementById('dag')
-  const W = N * CELL + PAD * 2
-  canvas.width = W; canvas.height = W
   const ctx = canvas.getContext('2d')
+  let lastN = 0
 
-  function cellCenter(r, c) {
+  function cellCenter(N, r, c) {
     return [PAD + c * CELL + CELL / 2, PAD + r * CELL + CELL / 2]
   }
 
   function drawArrow(x1, y1, x2, y2, color) {
     const dx = x2 - x1, dy = y2 - y1
     const len = Math.sqrt(dx*dx + dy*dy)
-    const r = 18  // node radius to stop arrow at edge
-    const sx = x1 + dx / len * r
-    const sy = y1 + dy / len * r
-    const ex = x2 - dx / len * (r + 4)
-    const ey = y2 - dy / len * (r + 4)
+    const rad = 18
+    const sx = x1 + dx / len * rad, sy = y1 + dy / len * rad
+    const ex = x2 - dx / len * (rad + 4), ey = y2 - dy / len * (rad + 4)
     ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey)
     ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke()
-    // arrowhead
     const angle = Math.atan2(ey - sy, ex - sx)
     ctx.beginPath()
     ctx.moveTo(ex, ey)
@@ -114,38 +114,34 @@ ${hasDag ? `
 
   async function renderDag() {
     const res = await fetch('/dag')
-    const dag = await res.json()  // { tasks: [{row,col,state,value,worker}], N }
+    const dag = await res.json()
+    const N = dag.N
+    if (!N || !dag.tasks || dag.tasks.length === 0) return
+    document.getElementById('dag-panel').style.display = 'flex'
+    const W = N * CELL + PAD * 2
+    if (N !== lastN) { canvas.width = W; canvas.height = W; lastN = N }
     ctx.clearRect(0, 0, W, W)
 
-    // Draw arrows first (behind nodes)
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
-        const [x, y] = cellCenter(r, c)
+        const [x, y] = cellCenter(N, r, c)
         const t = dag.tasks[r * N + c]
         const arrowColor = t.state === 'done' ? '#2a4a2a' : '#2a2a2a'
-        if (r > 0) {
-          const [px, py] = cellCenter(r - 1, c)
-          drawArrow(px, py, x, y, arrowColor)
-        }
-        if (c > 0) {
-          const [px, py] = cellCenter(r, c - 1)
-          drawArrow(px, py, x, y, arrowColor)
-        }
+        if (r > 0) { const [px, py] = cellCenter(N, r-1, c); drawArrow(px, py, x, y, arrowColor) }
+        if (c > 0) { const [px, py] = cellCenter(N, r, c-1); drawArrow(px, py, x, y, arrowColor) }
       }
     }
 
-    // Draw nodes
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
-        const [x, y] = cellCenter(r, c)
+        const [x, y] = cellCenter(N, r, c)
         const t = dag.tasks[r * N + c]
-        const state = t.state  // 'pending' | 'ready' | 'done'
+        const state = t.state
         const fill = state === 'done' ? '#1a5c1a' : state === 'ready' ? '#5c4a00' : '#1a1a2a'
         const border = state === 'done' ? '#3f3' : state === 'ready' ? '#fa0' : '#334'
         ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI * 2)
         ctx.fillStyle = fill; ctx.fill()
         ctx.strokeStyle = border; ctx.lineWidth = 2; ctx.stroke()
-        // label
         ctx.fillStyle = state === 'done' ? '#7f7' : state === 'ready' ? '#fc0' : '#446'
         ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
         ctx.fillText(r + ',' + c, x, y - 4)
@@ -160,7 +156,6 @@ ${hasDag ? `
       }
     }
 
-    // Legend
     ctx.font = '10px monospace'; ctx.textAlign = 'left'
     ctx.fillStyle = '#3f3'; ctx.fillText('● done', 10, W - 44)
     ctx.fillStyle = '#fa0'; ctx.fillText('● ready (waiting for worker)', 10, W - 30)
@@ -169,7 +164,6 @@ ${hasDag ? `
 
   setInterval(renderDag, 500)
   renderDag()
-` : ''}
 </script>
 </body>
 </html>`
