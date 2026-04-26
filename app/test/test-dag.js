@@ -5,9 +5,11 @@ import Corestore from 'corestore'
 import Autobase from 'autobase'
 import crypto from 'crypto'
 import fs from 'fs'
-import { pathToFileURL } from 'url'
-import { resolve } from 'path'
+import { pathToFileURL, fileURLToPath } from 'url'
+import { resolve, dirname } from 'path'
 import { executeTask } from '../worker.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 for (const d of ['store-dag-r', 'store-dag-w1', 'store-dag-w2']) {
   fs.rmSync(d, { recursive: true, force: true })
@@ -54,7 +56,7 @@ async function runDAGJob (jobFile, label) {
   console.log(`  JOB: ${label}`)
   console.log(`${'═'.repeat(60)}\n`)
 
-  const mod = await import(pathToFileURL(resolve(jobFile)).href + '?t=' + Date.now())
+  const mod = await import(pathToFileURL(resolve(__dirname, '..', jobFile)).href + '?t=' + Date.now())
   const chunks = mod.split(mod.data, 2) // 2 workers
   const jobId = crypto.randomUUID()
 
@@ -169,7 +171,7 @@ async function runDAGJob (jobFile, label) {
   console.log(output.slice(0, previewLen))
 
   if (mod.outputFile) {
-    fs.writeFileSync(mod.outputFile.replace('.ppm', '-dag-test.ppm'), output)
+    fs.writeFileSync(resolve(__dirname, '..', mod.outputFile.replace('.ppm', '-dag-test.ppm')), output)
     console.log(`[+] Saved to ${mod.outputFile.replace('.ppm', '-dag-test.ppm')}`)
   }
 
