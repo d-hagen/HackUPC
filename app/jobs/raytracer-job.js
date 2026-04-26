@@ -1,0 +1,188 @@
+// Distributed ray tracer: each worker renders a horizontal strip
+// join() assembles strips into a PPM file (open with Preview on macOS)
+export const outputFile = 'render.ppm'
+
+export const data = {
+  width: 800,
+  height: 600,
+  samplesPerPixel: 256,
+  maxDepth: 12
+}
+
+export function split (data, gridRows, gridCols = 1) {
+  const blockH = Math.ceil(data.height / gridRows)
+  const blockW = Math.ceil(data.width / gridCols)
+  const chunks = []
+  for (let gr = 0; gr < gridRows; gr++) {
+    for (let gc = 0; gc < gridCols; gc++) {
+      const startRow = gr * blockH
+      const endRow = Math.min(startRow + blockH, data.height)
+      const startCol = gc * blockW
+      const endCol = Math.min(startCol + blockW, data.width)
+      if (startRow >= data.height || startCol >= data.width) break
+      chunks.push({ ...data, startRow, endRow, startCol, endCol })
+    }
+  }
+  return chunks
+}
+
+export function compute (chunk) {
+  const { width, height, startRow, endRow, startCol = 0, endCol = width, samplesPerPixel, maxDepth } = chunk
+
+  // --- Scene ---
+  const spheres = [
+    // ground
+    { cx: 0, cy: -1000, cz: 0, r: 1000, color: [0.5, 0.5, 0.5], type: 'diffuse' },
+    // large center diffuse
+    { cx: 0, cy: 1, cz: 0, r: 1.0, color: [0.8, 0.8, 0.9], type: 'diffuse' },
+    // large left metal (gold)
+    { cx: -3, cy: 1, cz: 0, r: 1.0, color: [0.8, 0.6, 0.2], type: 'metal', fuzz: 0.05 },
+    // large right metal (silver mirror)
+    { cx: 3, cy: 1, cz: 0, r: 1.0, color: [0.9, 0.9, 0.9], type: 'metal', fuzz: 0.0 },
+    // small scattered balls
+    { cx: -1.5, cy: 0.3, cz: 1.5, r: 0.3, color: [0.9, 0.2, 0.2], type: 'diffuse' },
+    { cx: 0, cy: 0.3, cz: 1.5, r: 0.3, color: [0.2, 0.8, 0.3], type: 'diffuse' },
+    { cx: 1.5, cy: 0.3, cz: 1.5, r: 0.3, color: [0.2, 0.4, 0.9], type: 'diffuse' },
+    { cx: -2.5, cy: 0.25, cz: 2.5, r: 0.25, color: [0.9, 0.7, 0.1], type: 'metal', fuzz: 0.2 },
+    { cx: 2.5, cy: 0.25, cz: 2.5, r: 0.25, color: [0.6, 0.2, 0.8], type: 'diffuse' },
+    { cx: 1, cy: 0.2, cz: 2.8, r: 0.2, color: [0.95, 0.95, 0.5], type: 'metal', fuzz: 0.0 },
+    { cx: -1, cy: 0.2, cz: 2.8, r: 0.2, color: [0.3, 0.9, 0.9], type: 'diffuse' },
+    { cx: 0.5, cy: 0.15, cz: -1.5, r: 0.15, color: [1.0, 0.4, 0.1], type: 'metal', fuzz: 0.1 },
+    { cx: -0.5, cy: 0.15, cz: -1.5, r: 0.15, color: [0.5, 0.5, 1.0], type: 'diffuse' },
+    { cx: 2, cy: 0.2, cz: -1, r: 0.2, color: [0.8, 0.3, 0.5], type: 'metal', fuzz: 0.3 },
+    { cx: -2, cy: 0.2, cz: -1, r: 0.2, color: [0.4, 0.8, 0.4], type: 'diffuse' },
+  ]
+
+  // --- Camera ---
+  const camOrigin = [0, 2.5, 9]
+  const camTarget = [0, 0.5, 0]
+  const up = [0, 1, 0]
+  const fov = Math.PI / 5
+
+  const vlen = (v) => Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+  const norm = (v) => { const l = vlen(v); return [v[0] / l, v[1] / l, v[2] / l] }
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+  const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+  const scale = (v, s) => [v[0] * s, v[1] * s, v[2] * s]
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+  const cross = (a, b) => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0]
+  ]
+  const reflect = (v, n) => sub(v, scale(n, 2 * dot(v, n)))
+  const mulColor = (a, b) => [a[0] * b[0], a[1] * b[1], a[2] * b[2]]
+
+  const w = norm(sub(camOrigin, camTarget))
+  const u = norm(cross(up, w))
+  const v = cross(w, u)
+
+  const halfH = Math.tan(fov / 2)
+  const halfW = halfH * (width / height)
+
+  const lowerLeft = sub(sub(sub(camOrigin, scale(u, halfW)), scale(v, halfH)), w)
+  const horiz = scale(u, 2 * halfW)
+  const vert = scale(v, 2 * halfH)
+
+  // LCG random
+  let seed = 42 + startRow * 1337
+  function rand () {
+    seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF
+    return (seed >>> 0) / 0xFFFFFFFF
+  }
+  function randInUnitSphere () {
+    let p
+    do { p = [rand() * 2 - 1, rand() * 2 - 1, rand() * 2 - 1] } while (vlen(p) >= 1)
+    return p
+  }
+
+  function hitSphere (s, ro, rd, tmin, tmax) {
+    const oc = sub(ro, [s.cx, s.cy, s.cz])
+    const a = dot(rd, rd)
+    const b = dot(oc, rd)
+    const c = dot(oc, oc) - s.r * s.r
+    const disc = b * b - a * c
+    if (disc < 0) return null
+    const sqrtD = Math.sqrt(disc)
+    let t = (-b - sqrtD) / a
+    if (t < tmin || t > tmax) {
+      t = (-b + sqrtD) / a
+      if (t < tmin || t > tmax) return null
+    }
+    const p = add(ro, scale(rd, t))
+    const n = norm(sub(p, [s.cx, s.cy, s.cz]))
+    return { t, p, n, sphere: s }
+  }
+
+  function sceneHit (ro, rd, tmin, tmax) {
+    let best = null
+    for (const s of spheres) {
+      const h = hitSphere(s, ro, rd, tmin, best ? best.t : tmax)
+      if (h) best = h
+    }
+    return best
+  }
+
+  function rayColor (ro, rd, depth) {
+    if (depth <= 0) return [0, 0, 0]
+    const h = sceneHit(ro, rd, 0.001, 1e9)
+    if (!h) {
+      // sky gradient
+      const t = 0.5 * (norm(rd)[1] + 1)
+      return add(scale([1, 1, 1], 1 - t), scale([0.5, 0.7, 1.0], t))
+    }
+    const { p, n, sphere: s } = h
+    if (s.type === 'metal') {
+      const ref = reflect(norm(rd), n)
+      const scattered = add(ref, scale(randInUnitSphere(), s.fuzz))
+      if (dot(scattered, n) > 0) {
+        return mulColor(s.color, rayColor(p, scattered, depth - 1))
+      }
+      return [0, 0, 0]
+    }
+    // diffuse
+    const target = add(add(p, n), randInUnitSphere())
+    return mulColor(s.color, scale(rayColor(p, sub(target, p), depth - 1), 0.5))
+  }
+
+  const rows = []
+  for (let y = startRow; y < endRow; y++) {
+    const row = []
+    for (let x = startCol; x < endCol; x++) {
+      let r = 0, g = 0, b = 0
+      for (let s = 0; s < samplesPerPixel; s++) {
+        const su = (x + rand()) / width
+        const sv = 1 - (y + rand()) / height
+        const dir = norm(sub(add(add(lowerLeft, scale(horiz, su)), scale(vert, sv)), camOrigin))
+        const [cr, cg, cb] = rayColor(camOrigin, dir, maxDepth)
+        r += cr; g += cg; b += cb
+      }
+      row.push([
+        Math.min(255, Math.floor(Math.sqrt(r / samplesPerPixel) * 255.99)),
+        Math.min(255, Math.floor(Math.sqrt(g / samplesPerPixel) * 255.99)),
+        Math.min(255, Math.floor(Math.sqrt(b / samplesPerPixel) * 255.99))
+      ])
+    }
+    rows.push(row)
+  }
+
+  return { startRow, endRow, startCol, endCol, rows }
+}
+
+export function join (results) {
+  const fullW = results.reduce((m, r) => Math.max(m, r.endCol), 0)
+  const fullH = results.reduce((m, r) => Math.max(m, r.endRow), 0)
+  const grid = Array.from({ length: fullH }, () => new Array(fullW).fill(null))
+  for (const block of results) {
+    for (let y = 0; y < block.rows.length; y++) {
+      for (let x = 0; x < block.rows[y].length; x++) {
+        grid[block.startRow + y][block.startCol + x] = block.rows[y][x]
+      }
+    }
+  }
+  let ppm = `P3\n${fullW} ${fullH}\n255\n`
+  for (const row of grid) {
+    ppm += row.map(px => px ? `${px[0]} ${px[1]} ${px[2]}` : '0 0 0').join(' ') + '\n'
+  }
+  return ppm
+}

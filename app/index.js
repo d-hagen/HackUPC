@@ -1,7 +1,9 @@
 /** @typedef {import('pear-interface')} */ /* global Pear */
 import './compat.js'
+import fs from 'fs'
 import { RequesterCore } from './requester-core.js'
 import { WorkerCore } from './worker-core.js'
+import { detectCapabilities } from './capabilities.js'
 
 let requester = null
 let worker = null
@@ -15,7 +17,6 @@ const runtime = new Runtime()
 const uiPipe = await runtime.start({ bridge })
 
 // uiPipe is the fd-3 duplex stream to the renderer process.
-// Send a JSON line; renderer receives via pear-pipe.
 function send (type, payload) {
   uiPipe.write(JSON.stringify({ type, payload }) + '\n')
 }
@@ -50,20 +51,23 @@ function wireWorker (w) {
   w.on('task-error',      p => broadcast('task-error', p))
   w.on('requester-found', p => broadcast('requester-found', p))
   w.on('status',          p => broadcast('worker-status', p))
+  w.on('error',           p => broadcast('error', p))
 }
+
+const SETTINGS_PATH = './pear-settings.json'
 
 async function handleCmd (body) {
   const { type, payload = {} } = body
   if (type !== 'get-status') console.log(tag(`→ cmd    ${type}`), JSON.stringify(payload).slice(0, 120))
 
   if (type === 'start-requester' && !requester) {
-    requester = new RequesterCore({ storePath: './store-requester' })
+    const bootstrap = payload.bootstrapNode || null
+    requester = new RequesterCore({ storePath: './store-requester', bootstrap })
     wireRequester(requester)
     await requester.start()
   }
 
   if (type === 'start-worker' && !worker) {
-    // hw: 'cpu' | 'cpu+gpu' | 'gpu'
     const hw = payload.hw || 'cpu+gpu'
     worker = new WorkerCore({
       storePath: './store-worker-ui',
@@ -76,14 +80,21 @@ async function handleCmd (body) {
     await worker.start()
   }
 
-  if (type === 'submit-task'  && requester) await requester.submitTask(payload.code)
-  if (type === 'submit-job'   && requester) await requester.submitJob(payload.filePath, payload.n || null)
-  if (type === 'submit-shell' && requester) await requester.submitShell(payload.cmd, payload.timeout || 60000)
-  if (type === 'upload-file'  && requester) await requester.uploadFile(payload.localPath, payload.remotePath)
+  if (type === 'submit-task'  && requester) await requester.submitTask(payload.code, payload.requires).catch(e => broadcast('error', { message: e.message }))
+  if (type === 'submit-job'   && requester) await requester.submitJob(payload.filePath, payload.n || null).catch(e => broadcast('error', { message: e.message }))
+  if (type === 'submit-shell' && requester) await requester.submitShell(payload.cmd, payload.timeout || 60000, payload.requires).catch(e => broadcast('error', { message: e.message }))
+  if (type === 'upload-file'  && requester) await requester.uploadFile(payload.localPath, payload.remotePath).catch(e => broadcast('error', { message: e.message }))
 
   if (type === 'get-status') {
     if (requester) broadcast('requester-status', requester.getStatus())
-    if (worker)    broadcast('worker-status',    worker.getStatus())
+    if (worker) {
+      const status = worker.getStatus()
+      if (worker._pool) {
+        status.poolSize = worker._pool.size
+        status.poolBusy = worker._pool.running || 0
+      }
+      broadcast('worker-status', status)
+    }
   }
 
   if (type === 'stop-requester' && requester) {
@@ -101,6 +112,33 @@ async function handleCmd (body) {
     await worker.stop()
     worker = null
     broadcast('worker-stopped', {})
+  }
+
+  if (type === 'save-settings') {
+    try {
+      fs.writeFileSync(SETTINGS_PATH, JSON.stringify(payload, null, 2))
+      broadcast('settings-loaded', payload)
+    } catch (e) {
+      broadcast('error', { message: `Failed to save settings: ${e.message}` })
+    }
+  }
+
+  if (type === 'load-settings') {
+    try {
+      if (fs.existsSync(SETTINGS_PATH)) {
+        const data = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'))
+        broadcast('settings-loaded', data)
+      }
+    } catch {}
+  }
+
+  if (type === 'get-capabilities') {
+    try {
+      const caps = await detectCapabilities()
+      broadcast('capabilities-detected', caps)
+    } catch (e) {
+      broadcast('error', { message: `Capability detection failed: ${e.message}` })
+    }
   }
 }
 

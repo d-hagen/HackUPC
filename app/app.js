@@ -1,35 +1,11 @@
 'use strict'
 
-// ── IPC via Pear's internal pipe (no HTTP) ─────────────────────
-//
-//  How this works:
-//  ┌─────────────────────────────────────────────────────────────┐
-//  │  Renderer (this file, app.js)  ←─── Electron/Pear ────→  Main process (index.js)  │
-//  │                                                             │
-//  │  send(type, payload)           ──JSON line──►  handleCmd()  │
-//  │  handleMsg(msg)               ◄──JSON line──   broadcast()  │
-//  └─────────────────────────────────────────────────────────────┘
-//
-//  Both sides communicate over a single duplex pipe (pear-pipe / fd-3).
-//  Every message is a JSON object on one line: {"type":"...","payload":{...}}\n
-//
-//  Renderer → Main:  send('submit-task', { code: '...' })
-//  Main → Renderer:  index.js calls broadcast('task-posted', { taskId, preview })
-//                    which calls send() on the main side, which arrives here as
-//                    a 'data' event and is routed to handleMsg()
-
 const pipe = Pear[Pear.constructor.IPC].pipe()
 
-// ── Debug logger ───────────────────────────────────────────────
-//  Writes to both:
-//    • DevTools console  (always visible in Cmd+Option+I)
-//    • The on-screen log panels (req-log-list / wkr-log-list)
-//
-//  console.log styles:  %c prefix applies CSS in DevTools
 const CON = {
-  pipe:  'color:#06b6d4;font-weight:bold',   // cyan  — IPC traffic
-  event: 'color:#22c55e;font-weight:bold',   // green — events from backend
-  cmd:   'color:#7c3aed;font-weight:bold',   // purple — commands to backend
+  pipe:  'color:#06b6d4;font-weight:bold',
+  event: 'color:#22c55e;font-weight:bold',
+  cmd:   'color:#7c3aed;font-weight:bold',
   warn:  'color:#eab308;font-weight:bold',
   error: 'color:#ef4444;font-weight:bold',
   info:  'color:#94a3b8',
@@ -39,7 +15,6 @@ function dbg (style, label, ...args) {
   console.log(`%c${label}`, style, ...args)
 }
 
-// ── Pipe receive ───────────────────────────────────────────────
 let _pipeBuf = ''
 pipe.on('data', chunk => {
   _pipeBuf += chunk.toString()
@@ -49,7 +24,6 @@ pipe.on('data', chunk => {
     if (!line.trim()) continue
     try {
       const msg = JSON.parse(line)
-      // skip noisy status polls from console (still shown in UI log)
       if (!msg.type.endsWith('-status')) {
         dbg(CON.event, `◄ event  ${msg.type}`, msg.payload)
       }
@@ -65,7 +39,6 @@ pipe.on('close', () => dbg(CON.warn, '◄ pipe closed'))
 
 dbg(CON.pipe, '★ app.js loaded — pipe open, waiting for backend...')
 
-// ── Pipe send ──────────────────────────────────────────────────
 function send (type, payload = {}) {
   if (type !== 'get-status') dbg(CON.cmd, `► cmd    ${type}`, payload)
   pipe.write(JSON.stringify({ type, payload }) + '\n')
@@ -78,14 +51,14 @@ const state = {
   jobs: new Map(),
   requesterLaunched: false,
   workerLaunched: false,
-  mandelbrotActive: false,
-  mandelbrotJobId: null,
-  mandelbrotDone: 0,
-  mandelbrotTotal: 0,
-  mandelbrotWorkers: new Set(),
-  mandelbrotStart: null,
-  mandelbrotCtx: null,
-  mandelbrotConfig: null,
+  taskFilter: 'queue',
+  scheduleDataFiles: [],
+  scheduleScriptPath: null,
+  scheduleScriptFile: null,
+  cmdHistory: [],
+  cmdHistoryPos: -1,
+  workerCaps: null,
+  settings: {},
 }
 
 // ── DOM helpers ────────────────────────────────────────────────
@@ -103,7 +76,6 @@ function showToast (msg, type = '') {
   toast._timer = setTimeout(() => { toast.className = '' }, 3000)
 }
 
-// level → console style mapping
 const LEVEL_CON = {
   info:    CON.info,
   success: CON.event,
@@ -113,10 +85,7 @@ const LEVEL_CON = {
 }
 
 function log (listId, msg, level = 'info') {
-  // 1. DevTools console
   console.log(`%c[${listId === 'req-log-list' ? 'req' : 'wkr'}] ${msg}`, LEVEL_CON[level] || CON.info)
-
-  // 2. On-screen log panel
   const list = $(listId)
   if (!list) return
   const item = document.createElement('div')
@@ -149,23 +118,7 @@ document.querySelectorAll('.mode-tab').forEach(tab => {
   })
 })
 
-// ── Content tabs (generic handler) ────────────────────────────
-function initTabs (containerSelector) {
-  document.querySelectorAll(`${containerSelector} .ctab`).forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll(`${containerSelector} .ctab`).forEach(t => t.classList.remove('active'))
-      const tabId = `tab-${tab.dataset.tab}`
-      // deactivate all panes that share this tab bar
-      const allPanes = document.querySelectorAll(`${containerSelector} ~ .view-content .tab-pane`)
-      allPanes.forEach(p => p.classList.remove('active'))
-      tab.classList.add('active')
-      const pane = $(tabId)
-      if (pane) pane.classList.add('active')
-    })
-  })
-}
-
-// Tabs are inside .view-content — use parent .mode-view for scoping
+// ── Content tabs ──────────────────────────────────────────────
 document.querySelectorAll('.content-tabs .ctab').forEach(tab => {
   tab.addEventListener('click', () => {
     const bar = tab.closest('.content-tabs')
@@ -178,46 +131,84 @@ document.querySelectorAll('.content-tabs .ctab').forEach(tab => {
   })
 })
 
-// ── Submit type sub-tabs ───────────────────────────────────────
-document.querySelectorAll('.stype-btn').forEach(btn => {
+// ── Log toggles ───────────────────────────────────────────────
+function setupLogToggle (toggleId, closeId, terminalId) {
+  const toggle = $(toggleId)
+  const terminal = $(terminalId)
+  const close = $(closeId)
+  toggle.addEventListener('click', () => {
+    const isOpen = terminal.style.display !== 'none'
+    terminal.style.display = isOpen ? 'none' : ''
+    toggle.classList.toggle('active', !isOpen)
+  })
+  close.addEventListener('click', () => {
+    terminal.style.display = 'none'
+    toggle.classList.remove('active')
+  })
+}
+setupLogToggle('req-log-toggle', 'req-log-close', 'req-log-terminal')
+setupLogToggle('wkr-log-toggle', 'wkr-log-close', 'wkr-log-terminal')
+
+// ── Task queue with filter ────────────────────────────────────
+document.querySelectorAll('.tq-filter').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.stype-btn').forEach(b => b.classList.remove('active'))
+    document.querySelectorAll('.tq-filter').forEach(b => b.classList.remove('active'))
     btn.classList.add('active')
-    $('submit-code-mode').style.display = btn.dataset.stype === 'code' ? '' : 'none'
-    $('submit-job-mode').style.display = btn.dataset.stype === 'job' ? '' : 'none'
-    $('submit-shell-mode').style.display = btn.dataset.stype === 'shell' ? '' : 'none'
+    state.taskFilter = btn.dataset.filter
+    renderTaskList()
   })
 })
 
-// ── Task queue ────────────────────────────────────────────────
-function renderTask (task) {
-  $('task-empty').style.display = 'none'
+function renderTaskList () {
   const wrap = $('task-list-wrap')
-  let el = $(`task-${task.id}`)
-  if (!el) {
-    el = document.createElement('div')
+  const filter = state.taskFilter
+  const tasks = [...state.tasks.values()]
+
+  const queue   = tasks.filter(t => t.status === 'pending')
+  const running = tasks.filter(t => t.status === 'running')
+  const history = tasks.filter(t => t.status === 'done' || t.status === 'error')
+
+  $('tq-count-queue').textContent   = queue.length
+  $('tq-count-running').textContent = running.length
+  $('tq-count-history').textContent = history.length
+
+  const visible = filter === 'queue' ? queue : filter === 'running' ? running : history
+
+  ;[...wrap.children].forEach(c => { if (c.id !== 'task-empty') c.remove() })
+
+  if (visible.length === 0) {
+    $('task-empty').style.display = ''
+    return
+  }
+  $('task-empty').style.display = 'none'
+
+  for (const task of [...visible].reverse()) {
+    const el = document.createElement('div')
     el.className = 'task-item'
     el.id = `task-${task.id}`
-    wrap.insertBefore(el, wrap.firstChild)
+    const badge = task.status === 'pending' ? 'badge-pending'
+      : task.status === 'running' ? 'badge-running'
+      : task.status === 'error' ? 'badge-error' : 'badge-done'
+    const label = { pending: 'Pending', running: 'Running', error: 'Error', done: 'Done' }[task.status]
+    let html = `
+      <span class="task-badge ${badge}">${label}</span>
+      <span class="task-preview">${escHtml(task.preview || task.id.slice(0, 16))}</span>
+      <span class="task-by">${escHtml(task.by ? task.by.slice(0, 10) : '')}</span>
+      <span class="task-elapsed">${task.elapsed ? task.elapsed + 'ms' : ''}</span>
+    `
+    if (task.jobId && task.totalChunks > 1) {
+      const job = state.jobs.get(task.jobId)
+      const pct = task.totalChunks > 0 ? ((job ? job.done : 0) / task.totalChunks * 100).toFixed(0) : 0
+      html += `<div class="job-progress"><div class="job-progress-fill" style="width:${pct}%"></div></div>`
+    }
+    el.innerHTML = html
+    wrap.appendChild(el)
   }
-  const badge = task.status === 'pending' ? 'badge-pending'
-    : task.status === 'running' ? 'badge-running'
-    : task.status === 'error' ? 'badge-error' : 'badge-done'
-  const label = task.status === 'pending' ? 'Pending'
-    : task.status === 'running' ? 'Running'
-    : task.status === 'error' ? 'Error' : 'Done'
-  let html = `
-    <span class="task-badge ${badge}">${label}</span>
-    <span class="task-preview">${escHtml(task.preview || task.id.slice(0, 16))}</span>
-    <span class="task-by">${escHtml(task.by ? task.by.slice(0, 10) : '')}</span>
-    <span class="task-elapsed">${task.elapsed ? task.elapsed + 'ms' : ''}</span>
-  `
-  if (task.jobId && task.totalChunks > 1) {
-    const job = state.jobs.get(task.jobId)
-    const pct = task.totalChunks > 0 ? ((job ? job.done : 0) / task.totalChunks * 100).toFixed(0) : 0
-    html += `<div class="job-progress"><div class="job-progress-fill" style="width:${pct}%"></div></div>`
-  }
-  el.innerHTML = html
+}
+
+function renderTask (task) {
+  state.tasks.set(task.id, task)
+  renderTaskList()
 }
 
 // ── Worker list ───────────────────────────────────────────────
@@ -247,8 +238,12 @@ function renderGraph () {
     const angle = (i / Math.max(workers.length, 1)) * Math.PI * 2 - Math.PI / 2
     const wx = (cx + r * Math.cos(angle)).toFixed(1)
     const wy = (cy + r * Math.sin(angle)).toFixed(1)
-    out += `<line x1="${cx}" y1="${cy}" x2="${wx}" y2="${wy}" stroke="#2a2a35" stroke-width="1.5"/>`
+    const runningCount = [...state.tasks.values()].filter(t => t.by === w.id && t.status === 'running').length
+    out += `<line id="graph-line-${escHtml(w.id)}" x1="${cx}" y1="${cy}" x2="${wx}" y2="${wy}" stroke="#2a2a35" stroke-width="1.5"/>`
     out += `<circle cx="${wx}" cy="${wy}" r="5" fill="#22c55e" opacity="0.9"/>`
+    if (runningCount > 0) {
+      out += `<text x="${wx}" y="${(+wy - 8).toFixed(1)}" text-anchor="middle" fill="#06b6d4" font-size="8" font-family="monospace">${runningCount}</text>`
+    }
     out += `<text x="${wx}" y="${(+wy + 14).toFixed(1)}" text-anchor="middle" fill="#94a3b8" font-size="8" font-family="monospace">${escHtml(w.id.slice(0, 8))}</text>`
   })
   const cc = state.requesterLaunched ? '#7c3aed' : '#475569'
@@ -257,33 +252,11 @@ function renderGraph () {
   svg.innerHTML = out
 }
 
-// ── Mandelbrot ────────────────────────────────────────────────
-function initMandelbrotCanvas (config) {
-  const canvas = $('mandelbrot-canvas')
-  canvas.width = config.width || 128
-  canvas.height = config.height || 128
-  canvas.style.display = 'block'
-  canvas.style.width = Math.min(512, (config.width || 128) * 3) + 'px'
-  canvas.style.height = Math.min(512, (config.height || 128) * 3) + 'px'
-  $('mandelbrot-placeholder').style.display = 'none'
-  $('mandelbrot-info').style.display = 'flex'
-  state.mandelbrotCtx = canvas.getContext('2d')
-  $('mand-total').textContent = state.mandelbrotTotal
-}
-
-function paintMandelbrotChunk (rows, startRow, maxIter) {
-  const ctx = state.mandelbrotCtx
-  if (!ctx) return
-  rows.forEach((row, ry) => {
-    row.forEach((n, x) => {
-      const t = n >= maxIter ? 0 : n / maxIter
-      const r = Math.floor(9 * (1 - t) * t * t * t * 255)
-      const g = Math.floor(15 * (1 - t) * (1 - t) * t * t * 255)
-      const b = Math.floor(8.5 * (1 - t) * (1 - t) * (1 - t) * t * 255)
-      ctx.fillStyle = n >= maxIter ? '#0d0d0f' : `rgb(${r},${g},${b})`
-      ctx.fillRect(x, startRow + ry, 1, 1)
-    })
-  })
+function animateTaskDispatch (workerId) {
+  const lineEl = document.getElementById(`graph-line-${workerId}`)
+  if (!lineEl) return
+  lineEl.classList.add('graph-arc-pulse')
+  setTimeout(() => lineEl.classList.remove('graph-arc-pulse'), 1200)
 }
 
 // ── Message handler ───────────────────────────────────────────
@@ -291,25 +264,23 @@ function handleMsg (msg) {
   const { type, payload } = msg
   if (!payload) return
 
-  const netDot = $('net-dot')
-  const netLabel = $('net-label')
-
   switch (type) {
     case 'connected':
-      netDot.className = 'dot searching'
-      netLabel.textContent = 'Ready'
-      setInterval(() => send('get-status'), 3000)
+      $('net-dot').className = 'dot searching'
+      $('net-label').textContent = 'Ready'
+      send('load-settings', {})
+      send('get-capabilities', {})
       break
 
     case 'requester-ready':
       state.requesterLaunched = true
-      netDot.className = 'dot online'
-      netLabel.textContent = 'Online'
-      $('req-stats-section').style.display = ''
-      $('req-graph-section').style.display = ''
-      $('req-workers-section').style.display = ''
-      $('btn-launch-requester').style.display = 'none'
-      $('btn-stop-requester').style.display = ''
+      $('net-dot').className = 'dot online'
+      $('net-label').textContent = 'Online'
+      if ($('req-stats-section'))   $('req-stats-section').style.display = ''
+      if ($('req-graph-section'))   $('req-graph-section').style.display = ''
+      if ($('req-workers-section')) $('req-workers-section').style.display = ''
+      if ($('btn-launch-requester')) { $('btn-launch-requester').style.display = 'none'; $('btn-launch-requester').textContent = '▶ Start Request'; $('btn-launch-requester').disabled = false }
+      if ($('btn-stop-requester'))  $('btn-stop-requester').style.display = ''
       reqLogS(`Requester ready — ${payload.requesterId}`)
       renderGraph()
       break
@@ -330,29 +301,20 @@ function handleMsg (msg) {
       showToast(`Worker joined: ${payload.workerId.slice(0, 16)}`, 'success')
       break
 
-    case 'task-posted':
-      state.tasks.set(payload.taskId, { id: payload.taskId, status: 'pending', preview: payload.preview })
-      renderTask(state.tasks.get(payload.taskId))
+    case 'task-posted': {
+      const t = { id: payload.taskId, status: 'pending', preview: payload.preview }
+      state.tasks.set(payload.taskId, t)
+      renderTask(t)
       reqLogA(`Task posted: ${payload.preview}`)
-      break
-
-    case 'job-posted': {
-      state.jobs.set(payload.jobId, { done: 0, totalChunks: payload.totalChunks, fileName: payload.fileName })
-      reqLogA(`Job posted: ${payload.fileName} (${payload.totalChunks} chunks)`)
-      if (payload.fileName && payload.fileName.toLowerCase().includes('mandelbrot')) {
-        state.mandelbrotActive = true
-        state.mandelbrotJobId = payload.jobId
-        state.mandelbrotTotal = payload.totalChunks
-        state.mandelbrotDone = 0
-        state.mandelbrotStart = Date.now()
-        state.mandelbrotWorkers.clear()
-        $('mand-done').textContent = '0'
-        $('mand-total').textContent = payload.totalChunks
-        $('mand-workers').textContent = '0'
-        document.querySelector('.ctab[data-tab="req-mandelbrot"]').click()
-      }
+      // animate graph dispatch if worker known
+      for (const [, w] of state.workers) animateTaskDispatch(w.id)
       break
     }
+
+    case 'job-posted':
+      state.jobs.set(payload.jobId, { done: 0, totalChunks: payload.totalChunks, fileName: payload.fileName })
+      reqLogA(`Job posted: ${payload.fileName} (${payload.totalChunks} chunks)`)
+      break
 
     case 'result': {
       const t = state.tasks.get(payload.taskId) || { id: payload.taskId, preview: payload.taskId.slice(0, 16) }
@@ -361,35 +323,30 @@ function handleMsg (msg) {
       t.by = payload.by
       state.tasks.set(payload.taskId, t)
       renderTask(t)
-      if (payload.error) reqLogE(`Error from ${payload.by}: ${payload.error}`)
-      else reqLogS(`Result from ${payload.by} (${payload.elapsed}ms): ${JSON.stringify(payload.output).slice(0, 100)}`)
+      if (payload.error) {
+        reqLogE(`Error from ${payload.by}: ${payload.error}`)
+        cliPrint(`✗ Error from ${payload.by}: ${payload.error}`, 'error')
+      } else {
+        const out = JSON.stringify(payload.output).slice(0, 100)
+        reqLogS(`Result from ${payload.by} (${payload.elapsed}ms): ${out}`)
+        cliPrint(`✓ Result (${payload.elapsed}ms): ${out}`, 'success')
+      }
       break
     }
 
     case 'chunk-done': {
       const job = state.jobs.get(payload.jobId)
       if (job) { job.done++; state.jobs.set(payload.jobId, job) }
-      if (state.mandelbrotActive && payload.jobId === state.mandelbrotJobId) {
-        state.mandelbrotDone++
-        state.mandelbrotWorkers.add(payload.by)
-        $('mand-done').textContent = state.mandelbrotDone
-        $('mand-workers').textContent = state.mandelbrotWorkers.size
-        $('mand-elapsed').textContent = `${Date.now() - state.mandelbrotStart}ms`
-        if (payload.output && payload.output.rows && state.mandelbrotConfig) {
-          if (!state.mandelbrotCtx) initMandelbrotCanvas(state.mandelbrotConfig)
-          paintMandelbrotChunk(payload.output.rows, payload.output.startRow, state.mandelbrotConfig.maxIter || 200)
-        }
-      }
       reqLogA(`Chunk ${payload.chunkIndex + 1}/${payload.totalChunks} done by ${payload.by} (${payload.elapsed}ms)`)
+      renderTaskList()
       break
     }
 
     case 'job-complete': {
       const job = state.jobs.get(payload.jobId)
-      if (job) reqLog(`Job complete: ${job.fileName}`)
-      if (state.mandelbrotActive && payload.jobId === state.mandelbrotJobId) {
-        state.mandelbrotActive = false
-        showToast('Mandelbrot complete!', 'success')
+      if (job) {
+        reqLogS(`Job complete: ${job.fileName}`)
+        cliPrint(`✓ Job complete: ${job.fileName}`, 'success')
       }
       break
     }
@@ -413,6 +370,9 @@ function handleMsg (msg) {
       {
         const wscore = payload.reputation?.score ?? 0
         $('ws-rep').textContent = wscore > 0 ? `+${wscore}` : wscore
+      }
+      if (payload.poolSize !== undefined) {
+        $('ws-pool-util').textContent = `${payload.poolBusy ?? 0}/${payload.poolSize}`
       }
       break
 
@@ -439,13 +399,23 @@ function handleMsg (msg) {
       break
     }
 
-    case 'task-start':
+    case 'task-start': {
+      const rt = state.tasks.get(payload.taskId)
+      if (rt) { rt.status = 'running'; renderTask(rt) }
       wkrLogA(`Task started: "${payload.preview}"${payload.jobId ? ` (job chunk ${(payload.chunkIndex ?? 0) + 1})` : ''}`)
       break
+    }
 
-    case 'task-done':
+    case 'task-done': {
+      const td = state.tasks.get(payload.taskId)
+      if (td && td.status !== 'done' && td.status !== 'error') {
+        td.status = 'done'
+        td.elapsed = payload.elapsed
+        renderTask(td)
+      }
       wkrLogS(`Task done in ${payload.elapsed}ms${payload.jobId ? ` (job chunk ${(payload.chunkIndex ?? 0) + 1})` : ''}`)
       break
+    }
 
     case 'task-error':
       wkrLogE(`Task error: ${payload.error}`)
@@ -454,6 +424,15 @@ function handleMsg (msg) {
     case 'file-uploaded':
       reqLogS(`Uploaded: ${payload.remotePath}`)
       showToast(`Uploaded ${payload.remotePath}`, 'success')
+      cliPrint(`✓ Uploaded: ${payload.remotePath}`, 'success')
+      // mark matching data file as uploaded
+      for (const entry of state.scheduleDataFiles) {
+        if (payload.remotePath === `/data/${entry.file.name}`) {
+          entry.uploaded = true
+        }
+      }
+      renderDataFileList()
+      updateScheduleButtons()
       break
 
     case 'stop-blocked': {
@@ -467,7 +446,7 @@ function handleMsg (msg) {
 
     case 'requester-stopped':
       state.requesterLaunched = false
-      $('btn-launch-requester').textContent = '▶ Connect to Network'
+      $('btn-launch-requester').textContent = '▶ Start Request'
       $('btn-launch-requester').disabled = false
       $('btn-stop-requester').style.display = 'none'
       $('req-stats-section').style.display = 'none'
@@ -491,6 +470,31 @@ function handleMsg (msg) {
       wkrLogW('Worker stopped.')
       break
 
+    case 'capabilities-detected': {
+      state.workerCaps = payload
+      $('wkr-caps-section').style.display = ''
+      const model = payload.cpuModel || 'unknown'
+      $('cap-cpu-model').textContent = model.length > 18 ? model.slice(0, 18) + '…' : model
+      $('cap-cpu-cores').textContent = payload.cpuCores || '—'
+      $('cap-ram').textContent = payload.ramGB ? `${payload.ramGB} GB` : '—'
+      $('cap-gpu-name').textContent = payload.gpuName || 'None'
+      $('cap-gpu-type').textContent = payload.gpuType || 'cpu'
+      $('cap-python').textContent = payload.hasPython ? (payload.pythonVersion || 'yes') : 'no'
+      if (payload.cpuCores) {
+        const threadsEl = $('wkr-threads')
+        threadsEl.max = payload.cpuCores
+        if (parseInt(threadsEl.value) > payload.cpuCores) threadsEl.value = payload.cpuCores
+      }
+      break
+    }
+
+    case 'settings-loaded':
+      if (payload.defaultHw)      $('req-default-hw').value      = payload.defaultHw
+      if (payload.defaultTimeout) $('req-default-timeout').value  = payload.defaultTimeout
+      if (payload.bootstrapNode !== undefined) $('req-bootstrap-node').value = payload.bootstrapNode || ''
+      state.settings = payload
+      break
+
     case 'error':
       reqLogE(`Error: ${payload.message}`)
       wkrLogE(`Error: ${payload.message}`)
@@ -502,10 +506,11 @@ function handleMsg (msg) {
 // ── Launch / Stop: Requester ──────────────────────────────────
 $('btn-launch-requester').addEventListener('click', () => {
   if (state.requesterLaunched) return
-  send('start-requester', {})
-  $('btn-launch-requester').textContent = 'Connecting…'
+  const bootstrapNode = $('req-bootstrap-node').value.trim() || null
+  send('start-requester', { bootstrapNode })
+  $('btn-launch-requester').textContent = 'Starting…'
   $('btn-launch-requester').disabled = true
-  reqLog('Connecting to network…')
+  reqLog('Starting requester…')
 })
 
 $('btn-stop-requester').addEventListener('click', () => {
@@ -545,133 +550,238 @@ $('stop-modal-confirm').addEventListener('click', () => {
   _pendingStopRole = null
 })
 
-// ── Submit: Code ──────────────────────────────────────────────
-$('btn-run-code').addEventListener('click', () => {
-  const code = $('code-input').value.trim()
-  if (!code) { showToast('Enter some code first', 'error'); return }
-  const hw       = $('code-hw').value
-  const threads  = parseInt($('code-threads').value) || 1
-  const timeout  = (parseInt($('code-timeout').value) || 60) * 1000
-  send('submit-task', { code, requirements: { hw, threads }, timeout })
-  showToast('Task submitted')
-  document.querySelector('.ctab[data-tab="req-tasks"]').click()
+// ── Settings panel ────────────────────────────────────────────
+$('req-settings-toggle').addEventListener('click', () => {
+  const body = $('req-settings-body')
+  const arrow = $('req-settings-arrow')
+  const isOpen = body.style.display !== 'none'
+  body.style.display = isOpen ? 'none' : ''
+  arrow.textContent = isOpen ? '▶' : '▼'
 })
 
-$('code-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) $('btn-run-code').click()
+$('btn-save-settings').addEventListener('click', () => {
+  send('save-settings', {
+    defaultHw:      $('req-default-hw').value,
+    defaultTimeout: parseInt($('req-default-timeout').value) || 60,
+    bootstrapNode:  $('req-bootstrap-node').value.trim()
+  })
+  showToast('Settings saved', 'success')
 })
 
-// ── Submit: Shell ─────────────────────────────────────────────
-$('btn-run-shell').addEventListener('click', () => {
-  const cmd = $('shell-input').value.trim()
-  if (!cmd) { showToast('Enter a command', 'error'); return }
-  const hw      = $('shell-hw').value
-  const timeout = (parseInt($('shell-timeout').value) || 60) * 1000
-  send('submit-shell', { cmd, requirements: { hw }, timeout })
-  showToast('Shell task submitted')
-  document.querySelector('.ctab[data-tab="req-tasks"]').click()
-})
+// ── CLI ───────────────────────────────────────────────────────
+const cliOutput = $('cli-output')
+const cliInputEl = $('cli-input')
 
-$('shell-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') $('btn-run-shell').click()
-})
+function cliPrint (msg, level = 'info') {
+  const item = document.createElement('div')
+  item.className = `cli-line ${level}`
+  const ts = new Date().toTimeString().slice(0, 8)
+  item.innerHTML = `<span class="cli-ts">${ts}</span>${escHtml(msg)}`
+  cliOutput.appendChild(item)
+  cliOutput.scrollTop = cliOutput.scrollHeight
+}
 
-// ── Submit: Job file ──────────────────────────────────────────
-const dropZone = $('drop-zone')
-const fileInput = $('file-input')
-let selectedJobPath = null
+function parseRequiresFlag (tokens) {
+  const idx = tokens.indexOf('--requires')
+  if (idx === -1) return {}
+  const raw = tokens[idx + 1] || ''
+  const req = {}
+  for (const pair of raw.split(',')) {
+    const eqIdx = pair.indexOf('=')
+    if (eqIdx === -1) continue
+    const k = pair.slice(0, eqIdx).trim()
+    const v = pair.slice(eqIdx + 1).trim()
+    if (!k) continue
+    req[k] = v === 'true' ? true : v === 'false' ? false : isNaN(v) ? v : Number(v)
+  }
+  return req
+}
 
-dropZone.addEventListener('click', () => fileInput.click())
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over') })
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'))
-dropZone.addEventListener('drop', e => {
-  e.preventDefault()
-  dropZone.classList.remove('drag-over')
-  const file = e.dataTransfer.files[0]
-  if (file && file.name.endsWith('.js')) selectJobFile(file)
-  else showToast('Please drop a .js file', 'error')
-})
-fileInput.addEventListener('change', e => { if (e.target.files[0]) selectJobFile(e.target.files[0]) })
+function handleCLI (raw) {
+  const line = raw.trim()
+  if (!line) return
+  cliPrint(`> ${line}`, 'cmd')
 
-function selectJobFile (file) {
-  selectedJobPath = file.path || file.name
-  $('drop-file-name').textContent = file.name
-  $('drop-file-name').style.display = 'block'
-  $('btn-run-job').disabled = false
-  dropZone.querySelector('.drop-title').textContent = file.name
-  dropZone.querySelector('.drop-sub').textContent = 'Click to change file'
-  if (file.name.toLowerCase().includes('mandelbrot')) {
-    state.mandelbrotConfig = { width: 128, height: 128, maxIter: 200 }
+  if (state.cmdHistory[0] !== line) state.cmdHistory.unshift(line)
+  if (state.cmdHistory.length > 50) state.cmdHistory.length = 50
+  state.cmdHistoryPos = -1
+
+  const tokens = line.split(/\s+/)
+  const cmd = tokens[0].toLowerCase()
+
+  if (cmd === 'run') {
+    const reqIdx = tokens.indexOf('--requires')
+    const codeParts = tokens.slice(1, reqIdx === -1 ? undefined : reqIdx)
+    const code = codeParts.join(' ')
+    if (!code) { cliPrint('Usage: run <code> [--requires k=v,...]', 'error'); return }
+    const requires = parseRequiresFlag(tokens)
+    send('submit-task', { code, requires: Object.keys(requires).length ? requires : undefined })
+    cliPrint(`Task submitted: ${code.slice(0, 80)}`, 'accent')
+    document.querySelector('.ctab[data-tab="req-tasks"]').click()
+  } else if (cmd === 'shell') {
+    const reqIdx = tokens.indexOf('--requires')
+    const cmdParts = tokens.slice(1, reqIdx === -1 ? undefined : reqIdx)
+    const shellCmd = cmdParts.join(' ')
+    if (!shellCmd) { cliPrint('Usage: shell <cmd> [--requires k=v,...]', 'error'); return }
+    const requires = parseRequiresFlag(tokens)
+    send('submit-shell', { cmd: shellCmd, requires: Object.keys(requires).length ? requires : undefined })
+    cliPrint(`Shell task submitted: ${shellCmd}`, 'accent')
+    document.querySelector('.ctab[data-tab="req-tasks"]').click()
+  } else if (cmd === 'job') {
+    const filePath = tokens[1]
+    if (!filePath) { cliPrint('Usage: job <path>', 'error'); return }
+    send('submit-job', { filePath })
+    cliPrint(`Job submitted: ${filePath}`, 'accent')
+    document.querySelector('.ctab[data-tab="req-tasks"]').click()
+  } else if (cmd === 'upload') {
+    const localPath = tokens[1]
+    if (!localPath) { cliPrint('Usage: upload <localPath> [remotePath]', 'error'); return }
+    const remotePath = tokens[2] || `/${localPath.split('/').pop()}`
+    send('upload-file', { localPath, remotePath })
+    cliPrint(`Uploading ${localPath} → ${remotePath}`, 'accent')
+  } else if (cmd === 'help') {
+    cliPrint('Commands:', 'info')
+    cliPrint('  run <js code> [--requires k=v,...]   — run JS on a worker', 'info')
+    cliPrint('  shell <cmd> [--requires k=v,...]     — run shell command', 'info')
+    cliPrint('  job <path.js>                        — submit a job file', 'info')
+    cliPrint('  upload <localPath> [remotePath]      — upload a file', 'info')
+    cliPrint('Requires flags: hasGPU=true, cpuCores=4, hasPython=true, ...', 'info')
+  } else {
+    cliPrint(`Unknown command: "${cmd}". Type "help" for commands.`, 'error')
   }
 }
 
-$('btn-run-job').addEventListener('click', () => {
-  if (!selectedJobPath) { showToast('Select a job file first', 'error'); return }
-  const n       = parseInt($('job-workers-input').value) || null
-  const hw      = $('job-hw').value
-  const threads = parseInt($('job-threads').value) || 1
-  send('submit-job', { filePath: selectedJobPath, n, requirements: { hw, threads } })
+cliInputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    handleCLI(cliInputEl.value)
+    cliInputEl.value = ''
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    const next = state.cmdHistoryPos + 1
+    if (next < state.cmdHistory.length) {
+      state.cmdHistoryPos = next
+      cliInputEl.value = state.cmdHistory[state.cmdHistoryPos]
+    }
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    const next = state.cmdHistoryPos - 1
+    if (next < 0) {
+      state.cmdHistoryPos = -1
+      cliInputEl.value = ''
+    } else {
+      state.cmdHistoryPos = next
+      cliInputEl.value = state.cmdHistory[state.cmdHistoryPos]
+    }
+  }
+})
+
+// ── Schedule tab ──────────────────────────────────────────────
+const dropDataZone  = $('drop-data')
+const fileDataInput = $('file-data-input')
+const dropScriptZone  = $('drop-script')
+const fileScriptInput = $('file-script-input')
+
+function updateScheduleButtons () {
+  const hasData   = state.scheduleDataFiles.length > 0
+  const hasScript = !!state.scheduleScriptPath
+  const allUploaded = !hasData || state.scheduleDataFiles.every(f => f.uploaded)
+  $('btn-upload-all').disabled = !hasData && !hasScript
+  // Run is enabled when script is selected and (no data files, or all data files uploaded)
+  $('btn-run-script').disabled = !(hasScript && allUploaded)
+  const statusEl = $('schedule-status')
+  if (!hasScript) {
+    statusEl.textContent = ''
+  } else if (!hasData) {
+    statusEl.textContent = 'Ready to run (script only)'
+    statusEl.style.color = 'var(--green)'
+  } else if (allUploaded) {
+    statusEl.textContent = 'All files uploaded — ready to run'
+    statusEl.style.color = 'var(--green)'
+  } else {
+    const done = state.scheduleDataFiles.filter(f => f.uploaded).length
+    statusEl.textContent = `${done}/${state.scheduleDataFiles.length} data files uploaded`
+    statusEl.style.color = 'var(--text3)'
+  }
+}
+
+function renderDataFileList () {
+  const ul = $('data-file-list')
+  ul.innerHTML = ''
+  for (const entry of state.scheduleDataFiles) {
+    const li = document.createElement('li')
+    li.className = 'data-file-item'
+    li.innerHTML = `<span class="dfi-name">${escHtml(entry.file.name)}</span>` +
+      `<span class="dfi-status${entry.uploaded ? ' uploaded' : ''}">${entry.uploaded ? '✓ uploaded' : 'pending'}</span>`
+    ul.appendChild(li)
+  }
+}
+
+function addDataFiles (files) {
+  for (const file of files) {
+    if (!state.scheduleDataFiles.find(f => f.file.name === file.name)) {
+      state.scheduleDataFiles.push({ file, path: file.path || file.name, uploaded: false })
+    }
+  }
+  renderDataFileList()
+  updateScheduleButtons()
+}
+
+dropDataZone.addEventListener('click', () => fileDataInput.click())
+dropDataZone.addEventListener('dragover', e => { e.preventDefault(); dropDataZone.classList.add('drag-over') })
+dropDataZone.addEventListener('dragleave', () => dropDataZone.classList.remove('drag-over'))
+dropDataZone.addEventListener('drop', e => {
+  e.preventDefault()
+  dropDataZone.classList.remove('drag-over')
+  addDataFiles([...e.dataTransfer.files])
+})
+fileDataInput.addEventListener('change', e => { if (e.target.files.length) addDataFiles([...e.target.files]) })
+
+dropScriptZone.addEventListener('click', () => fileScriptInput.click())
+dropScriptZone.addEventListener('dragover', e => { e.preventDefault(); dropScriptZone.classList.add('drag-over') })
+dropScriptZone.addEventListener('dragleave', () => dropScriptZone.classList.remove('drag-over'))
+dropScriptZone.addEventListener('drop', e => {
+  e.preventDefault()
+  dropScriptZone.classList.remove('drag-over')
+  const file = e.dataTransfer.files[0]
+  if (file && file.name.endsWith('.js')) selectScriptFile(file)
+  else showToast('Please drop a .js file', 'error')
+})
+fileScriptInput.addEventListener('change', e => { if (e.target.files[0]) selectScriptFile(e.target.files[0]) })
+
+function selectScriptFile (file) {
+  state.scheduleScriptPath = file.path || file.name
+  state.scheduleScriptFile = file
+  $('drop-script-name').textContent = file.name
+  $('drop-script-name').style.display = 'block'
+  dropScriptZone.querySelector('.drop-title').textContent = file.name
+  dropScriptZone.querySelector('.drop-sub').textContent = 'Click to change'
+  updateScheduleButtons()
+}
+
+$('btn-upload-all').addEventListener('click', () => {
+  let queued = 0
+  for (const entry of state.scheduleDataFiles) {
+    if (!entry.uploaded) {
+      send('upload-file', { localPath: entry.path, remotePath: `/data/${entry.file.name}` })
+      queued++
+    }
+  }
+  if (state.scheduleScriptPath) {
+    send('upload-file', { localPath: state.scheduleScriptPath, remotePath: `/scripts/${state.scheduleScriptFile.name}` })
+    queued++
+  }
+  if (queued > 0) showToast(`Uploading ${queued} file(s)…`)
+})
+
+$('btn-run-script').addEventListener('click', () => {
+  if (!state.scheduleScriptPath) { showToast('Select a script first', 'error'); return }
+  send('submit-job', { filePath: state.scheduleScriptPath })
   showToast('Job submitted')
   document.querySelector('.ctab[data-tab="req-tasks"]').click()
 })
 
-// ── Upload: Data file ─────────────────────────────────────────
-setupDropZone('drop-data', 'file-data-input', 'drop-data-name', 'btn-upload-data', null, (file, path) => {
-  const remotePath = $('data-remote-path').value.trim() || `/data/${file.name}`
-  send('upload-file', { localPath: path, remotePath })
-  showToast('Uploading data…')
-})
-
-// ── Upload: Script file ───────────────────────────────────────
-setupDropZone('drop-script', 'file-script-input', 'drop-script-name', 'btn-upload-script', '.js', (file, path) => {
-  const remotePath = $('script-remote-path').value.trim() || `/scripts/${file.name}`
-  send('upload-file', { localPath: path, remotePath })
-  showToast('Uploading script…')
-})
-
-function setupDropZone (zoneId, inputId, nameId, btnId, ext, onUpload) {
-  const zone = $(zoneId)
-  const input = $(inputId)
-  const btn = $(btnId)
-  let selectedPath = null
-  let selectedFile = null
-
-  zone.addEventListener('click', () => input.click())
-  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over') })
-  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'))
-  zone.addEventListener('drop', e => {
-    e.preventDefault()
-    zone.classList.remove('drag-over')
-    const file = e.dataTransfer.files[0]
-    if (file && (!ext || file.name.endsWith(ext))) select(file)
-    else showToast(ext ? `Please drop a ${ext} file` : 'Please drop a file', 'error')
-  })
-  input.addEventListener('change', e => { if (e.target.files[0]) select(e.target.files[0]) })
-
-  function select (file) {
-    selectedPath = file.path || file.name
-    selectedFile = file
-    $(nameId).textContent = file.name
-    $(nameId).style.display = 'block'
-    zone.querySelector('.drop-title').textContent = file.name
-    zone.querySelector('.drop-sub').textContent = 'Click to change'
-    btn.disabled = false
-  }
-
-  btn.addEventListener('click', () => {
-    if (!selectedPath) return
-    onUpload(selectedFile, selectedPath)
-  })
-}
-
-// ── Mandelbrot ────────────────────────────────────────────────
-$('btn-start-mandelbrot').addEventListener('click', () => {
-  state.mandelbrotConfig = { width: 128, height: 128, maxIter: 200 }
-  state.mandelbrotActive = true
-  state.mandelbrotStart = Date.now()
-  state.mandelbrotDone = 0
-  state.mandelbrotWorkers.clear()
-  initMandelbrotCanvas(state.mandelbrotConfig)
-  send('submit-job', { filePath: './jobs/mandelbrot-job.js', n: null })
-  showToast('Mandelbrot job submitted')
-})
+// ── Startup ───────────────────────────────────────────────────
+// Status polling starts immediately; sends that require main-process
+// IPC to be ready (load-settings, get-capabilities) are deferred to
+// the 'connected' event so the stream is registered before we write.
+setInterval(() => send('get-status'), 3000)

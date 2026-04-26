@@ -1,0 +1,5 @@
+{
+  "defaultHw": "any",
+  "defaultTimeout": 60,
+  "bootstrapNode": ""
+}

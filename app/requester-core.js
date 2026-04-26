@@ -1,6 +1,7 @@
 // RequesterCore: EventEmitter wrapper around request-compute logic (no readline)
 import { createBase, NETWORK_TOPIC } from './base-setup.js'
 import { loadReputation, addConsumed, getScore } from './reputation.js'
+import { pickWorkerForTask } from './capabilities.js'
 import { pathToFileURL } from 'url'
 import { resolve, basename } from 'path'
 import crypto from 'crypto'
@@ -25,9 +26,10 @@ export class RequesterCore extends EventEmitter {
     this._cleanup = null
 
     this._printedResults = new Set()
-    this._workers = new Map() // writerKey -> { id, ts }
+    this._workers = new Map() // writerKey -> { id, ts, caps }
     this._pendingJobs = new Map()
     this._taskToJob = new Map()
+    this._pendingTaskRequires = new Map() // taskId -> requires object (null = any worker)
     this._broadcastConns = new Set()
     this._pendingTaskCount = 0
     this._broadcastInterval = null
@@ -61,16 +63,8 @@ export class RequesterCore extends EventEmitter {
       conn.on('close', () => this._broadcastConns.delete(conn))
       conn.on('error', () => this._broadcastConns.delete(conn))
 
-      const rep = loadReputation()
-      conn.write(JSON.stringify({
-        type: 'advertise',
-        role: 'requester',
-        requesterId: this.requesterId,
-        autobaseKey: this.autobaseKey,
-        pendingTasks: this._pendingTaskCount,
-        reputation: { donated: rep.donated, consumed: rep.consumed, score: getScore(rep) },
-        workerCount: this._workers.size
-      }))
+      // Use _broadcast() so pendingRequires is always included
+      this._broadcast()
 
       conn.on('data', async (data) => {
         try {
@@ -78,10 +72,11 @@ export class RequesterCore extends EventEmitter {
           if (msg.type === 'join-request' && msg.role === 'worker') {
             const writerKey = msg.writerKey
             if (!this._workers.has(writerKey)) {
-              this._workers.set(writerKey, { id: msg.workerId, ts: Date.now() })
+              const caps = msg.capabilities || {}
+              this._workers.set(writerKey, { id: msg.workerId, ts: Date.now(), caps })
               await this._base.append({ type: 'add-writer', key: writerKey, by: this.requesterId, ts: Date.now() })
               conn.write(JSON.stringify({ type: 'join-accepted', autobaseKey: this.autobaseKey }))
-              this.emit('worker-joined', { workerId: msg.workerId, writerKey })
+              this.emit('worker-joined', { workerId: msg.workerId, writerKey, caps })
               this._emitStatus()
             }
           }
@@ -93,19 +88,32 @@ export class RequesterCore extends EventEmitter {
 
     this._broadcastInterval = setInterval(() => this._broadcast(), 10000)
 
-    await Promise.all([this._discoverySwarm.flush(), this._replicationSwarm.flush()])
+    // Emit ready immediately so the UI doesn't wait for DHT peer connections.
+    // Swarm flush continues in the background.
     this.emit('ready', { requesterId: this.requesterId, autobaseKey: this.autobaseKey })
     this._emitStatus()
+
+    Promise.all([this._discoverySwarm.flush(), this._replicationSwarm.flush()]).catch(() => {})
   }
 
   _broadcast () {
     const rep = loadReputation()
+    const requiresSeen = new Set()
+    const pendingRequires = []
+    for (const req of this._pendingTaskRequires.values()) {
+      const key = req ? JSON.stringify(req) : 'null'
+      if (!requiresSeen.has(key)) {
+        requiresSeen.add(key)
+        pendingRequires.push(req)
+      }
+    }
     const msg = JSON.stringify({
       type: 'advertise',
       role: 'requester',
       requesterId: this.requesterId,
       autobaseKey: this.autobaseKey,
       pendingTasks: this._pendingTaskCount,
+      pendingRequires,
       workerCount: this._workers.size,
       reputation: { donated: rep.donated, consumed: rep.consumed, score: getScore(rep) }
     })
@@ -158,7 +166,10 @@ export class RequesterCore extends EventEmitter {
               this.emit('job-complete', { jobId, result: final, errors: errors.length })
               this._pendingJobs.delete(jobId)
               for (const [taskId, m] of this._taskToJob) {
-                if (m.jobId === jobId) this._taskToJob.delete(taskId)
+                if (m.jobId === jobId) {
+                  this._taskToJob.delete(taskId)
+                  this._pendingTaskRequires.delete(taskId)
+                }
               }
               this._pendingTaskCount = Math.max(0, this._pendingTaskCount - job.totalChunks)
               this._broadcast()
@@ -173,6 +184,7 @@ export class RequesterCore extends EventEmitter {
             by: entry.by
           })
           this._pendingTaskCount = Math.max(0, this._pendingTaskCount - 1)
+          this._pendingTaskRequires.delete(entry.taskId)
           this._broadcast()
         }
         this._emitStatus()
@@ -190,14 +202,18 @@ export class RequesterCore extends EventEmitter {
     }
   }
 
-  async submitTask (code) {
+  async submitTask (code, requires = null) {
     const id = crypto.randomUUID()
+    const assignedTo = pickWorkerForTask(requires, this._workers)
     await this._base.append({
       type: 'task', id, code, argNames: [], args: [],
+      requires: requires || undefined,
+      assignedTo: assignedTo || undefined,
       driveKey: this.driveKey,
       by: this.requesterId, ts: Date.now()
     })
     this._pendingTaskCount++
+    this._pendingTaskRequires.set(id, requires || null)
     addConsumed(1)
     this._broadcast()
     this.emit('task-posted', { taskId: id, preview: code.slice(0, 60) })
@@ -224,16 +240,22 @@ export class RequesterCore extends EventEmitter {
       joinFn: mod.join
     })
 
+    const jobRequires = mod.requires || null
     for (let i = 0; i < chunks.length; i++) {
       const taskId = crypto.randomUUID()
       this._taskToJob.set(taskId, { jobId, chunkIndex: i })
-      const assignedTo = workerIds.length > 0 ? workerIds[i % workerIds.length] : null
+      const assignedTo = jobRequires
+        ? pickWorkerForTask(jobRequires, this._workers)
+        : (workerIds.length > 0 ? workerIds[i % workerIds.length] : null)
       await this._base.append({
         type: 'task', id: taskId, jobId, chunkIndex: i, totalChunks: chunks.length,
         code, argNames: ['chunk'], args: [chunks[i]],
-        assignedTo, driveKey: this.driveKey,
+        requires: jobRequires || undefined,
+        assignedTo: assignedTo || undefined,
+        driveKey: this.driveKey,
         by: this.requesterId, ts: Date.now()
       })
+      this._pendingTaskRequires.set(taskId, jobRequires || null)
     }
     this._pendingTaskCount += chunks.length
     addConsumed(chunks.length)
@@ -254,6 +276,7 @@ export class RequesterCore extends EventEmitter {
     const { code } = await bundleTask(absPath, argNames)
     const id = crypto.randomUUID()
     this._pendingTaskCount++
+    this._pendingTaskRequires.set(id, null)
     await this._base.append({
       type: 'task', id, code, argNames, args: [],
       bundled: true, driveKey: this.driveKey,
@@ -266,13 +289,17 @@ export class RequesterCore extends EventEmitter {
     return id
   }
 
-  async submitShell (cmd, timeout = 60000) {
+  async submitShell (cmd, timeout = 60000, requires = null) {
     const id = crypto.randomUUID()
+    const assignedTo = pickWorkerForTask(requires, this._workers)
     await this._base.append({
       type: 'task', id, taskType: 'shell', cmd, timeout,
+      requires: requires || undefined,
+      assignedTo: assignedTo || undefined,
       by: this.requesterId, ts: Date.now()
     })
     this._pendingTaskCount++
+    this._pendingTaskRequires.set(id, requires || null)
     addConsumed(1)
     this._broadcast()
     this.emit('task-posted', { taskId: id, preview: `[shell] ${cmd.slice(0, 60)}` })

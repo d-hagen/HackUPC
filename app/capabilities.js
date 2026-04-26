@@ -2,7 +2,7 @@
 // CUDA (NVIDIA) → MPS (Apple Silicon) → CPU
 
 import os from 'os'
-import { execSync, spawnSync } from 'child_process'
+import { spawnSync } from 'child_process'
 
 function runCmd (cmd, timeout = 3000) {
   try {

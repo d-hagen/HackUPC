@@ -29,10 +29,37 @@
     <!-- Launch card -->
     <div class="sidebar-section launch-card">
       <div class="section-title">Requester</div>
-      <p class="launch-hint">Compute requirements are set per task in the Submit tab.</p>
+      <p class="launch-hint">Start the requester to begin distributing tasks.</p>
       <div class="launch-btn-row">
-        <button class="btn-launch" id="btn-launch-requester">▶ Connect to Network</button>
+        <button class="btn-launch" id="btn-launch-requester">▶ Start Request</button>
         <button class="btn-stop" id="btn-stop-requester" style="display:none">■ Stop</button>
+      </div>
+    </div>
+
+    <!-- Settings (collapsible) -->
+    <div class="sidebar-section" id="req-settings-section">
+      <div class="section-title settings-toggle" id="req-settings-toggle">Settings <span id="req-settings-arrow">▶</span></div>
+      <div id="req-settings-body" style="display:none">
+        <div class="launch-settings">
+          <div class="setting-row setting-row--col">
+            <span class="setting-label">Default hardware</span>
+            <select class="setting-select" id="req-default-hw">
+              <option value="any">Any hardware</option>
+              <option value="cpu">CPU only</option>
+              <option value="gpu-preferred">GPU preferred</option>
+              <option value="gpu-required">GPU required</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <span class="setting-label">Default timeout (s)</span>
+            <input class="setting-num" type="number" id="req-default-timeout" min="5" max="3600" value="60" />
+          </div>
+          <div class="setting-row setting-row--col">
+            <span class="setting-label">Bootstrap node</span>
+            <input type="text" id="req-bootstrap-node" class="input-path" placeholder="host:port" style="width:100%;margin-top:4px" />
+          </div>
+        </div>
+        <button class="btn-run" id="btn-save-settings" style="width:100%;margin-top:8px;padding:7px 0;font-size:12px;justify-content:center">Save Settings</button>
       </div>
     </div>
 
@@ -62,164 +89,78 @@
   </div>
 
   <div class="view-content">
-    <div class="content-tabs" id="req-tabs">
-      <div class="ctab active" data-tab="req-tasks">Task Queue</div>
-      <div class="ctab" data-tab="req-submit">Submit</div>
-      <div class="ctab" data-tab="req-upload">Upload</div>
-      <div class="ctab" data-tab="req-mandelbrot">Mandelbrot</div>
-      <div class="ctab" data-tab="req-log">Log</div>
+    <div class="content-header">
+      <div class="content-tabs" id="req-tabs">
+        <div class="ctab active" data-tab="req-tasks">Task Queue</div>
+        <div class="ctab" data-tab="req-cli">CLI</div>
+        <div class="ctab" data-tab="req-schedule">Schedule</div>
+      </div>
+      <button class="log-toggle-btn" id="req-log-toggle">Log</button>
+    </div>
+
+    <!-- Log terminal (hidden by default) -->
+    <div class="log-terminal" id="req-log-terminal" style="display:none">
+      <div class="log-terminal-bar">
+        <span class="log-terminal-title">Requester Log</span>
+        <button class="log-terminal-close" id="req-log-close">×</button>
+      </div>
+      <div class="log-list" id="req-log-list"></div>
     </div>
 
     <!-- Task Queue -->
     <div class="tab-pane active" id="tab-req-tasks">
+      <div class="tq-filter-bar">
+        <button class="tq-filter active" data-filter="queue">Queue <span class="tq-count" id="tq-count-queue">0</span></button>
+        <button class="tq-filter" data-filter="running">Running <span class="tq-count" id="tq-count-running">0</span></button>
+        <button class="tq-filter" data-filter="history">History <span class="tq-count" id="tq-count-history">0</span></button>
+      </div>
       <div id="task-list-wrap">
         <div class="empty-state" id="task-empty">
           <div class="es-icon">📋</div>
           <div class="es-title">No tasks yet</div>
-          <div class="es-sub">Submit a task from the Submit tab</div>
+          <div class="es-sub">Submit a task using the CLI</div>
         </div>
       </div>
     </div>
 
-    <!-- Submit -->
-    <div class="tab-pane" id="tab-req-submit">
-      <div id="submit-pane">
-        <div class="submit-type-tabs">
-          <button class="stype-btn active" data-stype="code">JS Code</button>
-          <button class="stype-btn" data-stype="job">Job File</button>
-          <button class="stype-btn" data-stype="shell">Shell</button>
-        </div>
-
-        <div id="submit-code-mode">
-          <div class="code-editor">
-            <textarea id="code-input" placeholder="return 2 + 2&#10;// or&#10;return Array.from({length:10},(_,i)=>i*i)" spellcheck="false"></textarea>
-          </div>
-          <div class="task-requirements">
-            <div class="req-title">Task requirements</div>
-            <div class="req-grid">
-              <div class="req-field">
-                <label class="req-label">Hardware</label>
-                <select class="req-select" id="code-hw">
-                  <option value="any">Any hardware</option>
-                  <option value="cpu">CPU only</option>
-                  <option value="gpu-preferred">GPU preferred</option>
-                  <option value="gpu-required">GPU required</option>
-                </select>
-              </div>
-              <div class="req-field">
-                <label class="req-label">Min threads</label>
-                <input class="req-num" type="number" id="code-threads" min="1" max="64" value="1" />
-              </div>
-              <div class="req-field">
-                <label class="req-label">Timeout (s)</label>
-                <input class="req-num" type="number" id="code-timeout" min="5" max="3600" value="60" />
-              </div>
-            </div>
-          </div>
-          <div class="submit-row">
-            <button class="btn-run" id="btn-run-code">▶ Run Task</button>
-            <span class="input-hint">JS evaluated on a remote worker. Use <code>return</code> to send results back.</span>
-          </div>
-        </div>
-
-        <div id="submit-job-mode" style="display:none">
-          <div id="drop-zone">
-            <div class="drop-icon">📁</div>
-            <div class="drop-title">Drop a .js job file here</div>
-            <div class="drop-sub">Or click to browse — must export data, split, compute, join</div>
-            <div class="drop-file" id="drop-file-name" style="display:none"></div>
-          </div>
-          <input type="file" id="file-input" accept=".js" style="display:none" />
-          <div class="task-requirements">
-            <div class="req-title">Job requirements</div>
-            <div class="req-grid">
-              <div class="req-field">
-                <label class="req-label">Hardware</label>
-                <select class="req-select" id="job-hw">
-                  <option value="any">Any hardware</option>
-                  <option value="cpu">CPU only</option>
-                  <option value="gpu-preferred">GPU preferred</option>
-                  <option value="gpu-required">GPU required</option>
-                </select>
-              </div>
-              <div class="req-field">
-                <label class="req-label">Min threads</label>
-                <input class="req-num" type="number" id="job-threads" min="1" max="64" value="1" />
-              </div>
-              <div class="req-field">
-                <label class="req-label">Workers</label>
-                <input class="req-num" type="number" id="job-workers-input" min="1" max="32" placeholder="auto" />
-              </div>
-            </div>
-          </div>
-          <div class="submit-row">
-            <button class="btn-run" id="btn-run-job" disabled>▶ Run Job</button>
-            <span class="input-hint">Splits job across N workers in parallel</span>
-          </div>
-        </div>
-
-        <div id="submit-shell-mode" style="display:none">
-          <input id="shell-input" type="text" placeholder="echo hello world" spellcheck="false" class="input-full" />
-          <div class="task-requirements">
-            <div class="req-title">Task requirements</div>
-            <div class="req-grid">
-              <div class="req-field">
-                <label class="req-label">Hardware</label>
-                <select class="req-select" id="shell-hw">
-                  <option value="any">Any hardware</option>
-                  <option value="cpu">CPU only</option>
-                  <option value="gpu-preferred">GPU preferred</option>
-                  <option value="gpu-required">GPU required</option>
-                </select>
-              </div>
-              <div class="req-field">
-                <label class="req-label">Timeout (s)</label>
-                <input class="req-num" type="number" id="shell-timeout" min="5" max="3600" value="60" />
-              </div>
-            </div>
-          </div>
-          <div class="submit-row">
-            <button class="btn-run" id="btn-run-shell">▶ Run Shell</button>
-            <span class="input-hint">Runs on a remote worker (ALLOW_SHELL must be enabled)</span>
-          </div>
+    <!-- CLI -->
+    <div class="tab-pane" id="tab-req-cli">
+      <div class="cli-pane">
+        <div class="cli-output" id="cli-output"></div>
+        <div class="cli-input-row">
+          <span class="cli-prompt">&gt;</span>
+          <input type="text" id="cli-input" class="cli-input-field" placeholder="run &lt;code&gt;  shell &lt;cmd&gt;  job &lt;path&gt;  upload &lt;localPath&gt;  help" autocomplete="off" spellcheck="false" />
         </div>
       </div>
     </div>
 
-    <!-- Upload -->
-    <div class="tab-pane" id="tab-req-upload">
-      <div class="upload-pane">
+    <!-- Schedule -->
+    <div class="tab-pane" id="tab-req-schedule">
+      <div class="schedule-pane">
 
-        <div class="upload-section">
-          <div class="upload-section-title">
-            <span class="upload-icon">🗄️</span>
+        <div class="schedule-section">
+          <div class="schedule-heading">
+            <span class="schedule-icon">🗄️</span>
             <div>
-              <div class="upload-heading">Data File</div>
-              <div class="upload-sub">CSV, JSON, binary — any format</div>
+              <div class="schedule-title">Data Files</div>
+              <div class="schedule-sub">CSV, JSON, binary — multiple files, optional</div>
             </div>
           </div>
           <div class="drop-zone-upload" id="drop-data">
             <div class="drop-icon">📂</div>
-            <div class="drop-title">Drop data file here</div>
-            <div class="drop-sub">Or click to browse</div>
-            <div class="drop-file" id="drop-data-name" style="display:none"></div>
+            <div class="drop-title">Drop data files here</div>
+            <div class="drop-sub">Or click to browse (multiple files)</div>
           </div>
-          <input type="file" id="file-data-input" style="display:none" />
-          <div class="upload-dest-row">
-            <span class="setting-label">Remote path</span>
-            <input type="text" id="data-remote-path" class="input-path" placeholder="/data/input.csv" />
-          </div>
-          <button class="btn-run" id="btn-upload-data" disabled>⬆ Upload Data</button>
+          <input type="file" id="file-data-input" multiple style="display:none" />
+          <ul class="data-file-list" id="data-file-list"></ul>
         </div>
 
-        <div class="upload-divider"></div>
-
-        <div class="upload-section">
-          <div class="upload-section-title">
-            <span class="upload-icon">📜</span>
+        <div class="schedule-section">
+          <div class="schedule-heading">
+            <span class="schedule-icon">📜</span>
             <div>
-              <div class="upload-heading">Script / Job File</div>
-              <div class="upload-sub">.js files — task scripts or job definitions</div>
+              <div class="schedule-title">Script File</div>
+              <div class="schedule-sub">.js job definition — must export data, split, compute, join</div>
             </div>
           </div>
           <div class="drop-zone-upload" id="drop-script">
@@ -229,40 +170,14 @@
             <div class="drop-file" id="drop-script-name" style="display:none"></div>
           </div>
           <input type="file" id="file-script-input" accept=".js" style="display:none" />
-          <div class="upload-dest-row">
-            <span class="setting-label">Remote path</span>
-            <input type="text" id="script-remote-path" class="input-path" placeholder="/scripts/task.js" />
-          </div>
-          <button class="btn-run" id="btn-upload-script" disabled>⬆ Upload Script</button>
         </div>
 
-      </div>
-    </div>
-
-    <!-- Mandelbrot -->
-    <div class="tab-pane" id="tab-req-mandelbrot">
-      <div id="mandelbrot-pane">
-        <div id="mandelbrot-placeholder">
-          <div class="ph-icon">🌀</div>
-          <div style="font-size:14px;font-weight:600;color:var(--text2)">Live Mandelbrot Viewer</div>
-          <div style="font-size:12px;text-align:center;max-width:280px;line-height:1.6">
-            Run a mandelbrot job from the Submit tab.<br/>Tiles render live as workers return chunks.
-          </div>
-          <button class="btn-run" id="btn-start-mandelbrot" style="margin-top:8px">▶ Run Mandelbrot Demo</button>
+        <div class="schedule-actions">
+          <button class="btn-run" id="btn-upload-all" disabled>⬆ Upload All</button>
+          <button class="btn-run" id="btn-run-script" disabled>▶ Run Script</button>
+          <span class="schedule-status" id="schedule-status"></span>
         </div>
-        <canvas id="mandelbrot-canvas" style="display:none" width="512" height="512"></canvas>
-        <div class="mandelbrot-info" id="mandelbrot-info" style="display:none">
-          <div class="mand-stat">Chunks: <span id="mand-done">0</span>/<span id="mand-total">0</span></div>
-          <div class="mand-stat">Workers: <span id="mand-workers">0</span></div>
-          <div class="mand-stat">Elapsed: <span id="mand-elapsed">0ms</span></div>
-        </div>
-      </div>
-    </div>
 
-    <!-- Log -->
-    <div class="tab-pane" id="tab-req-log">
-      <div id="log-pane">
-        <div class="log-list" id="req-log-list"></div>
       </div>
     </div>
 
@@ -302,6 +217,19 @@
       <p class="launch-hint launch-hint--warn">One worker per machine. Settings are locked after launch.</p>
     </div>
 
+    <!-- Detected capabilities (shown after detection) -->
+    <div class="sidebar-section" id="wkr-caps-section" style="display:none">
+      <div class="section-title">Detected Hardware</div>
+      <div class="worker-self">
+        <div class="ws-row"><span>CPU</span><span id="cap-cpu-model">—</span></div>
+        <div class="ws-row"><span>Cores</span><span id="cap-cpu-cores">—</span></div>
+        <div class="ws-row"><span>RAM</span><span id="cap-ram">—</span></div>
+        <div class="ws-row"><span>GPU</span><span id="cap-gpu-name">—</span></div>
+        <div class="ws-row"><span>GPU type</span><span id="cap-gpu-type">—</span></div>
+        <div class="ws-row"><span>Python</span><span id="cap-python">—</span></div>
+      </div>
+    </div>
+
     <!-- Worker self panel (hidden until launched) -->
     <div class="sidebar-section" id="wkr-self-section" style="display:none">
       <div class="section-title">This Node</div>
@@ -310,19 +238,34 @@
         <div class="ws-row"><span>Connected to</span><span id="ws-requester">—</span></div>
         <div class="ws-row"><span>Tasks done</span><span id="ws-tasks">0</span></div>
         <div class="ws-row"><span>Reputation</span><span id="ws-rep">0</span></div>
+        <div class="ws-row"><span>Pool threads</span><span id="ws-pool-util">—</span></div>
       </div>
     </div>
 
   </div>
 
   <div class="view-content">
-    <div class="content-tabs" id="wkr-tabs">
-      <div class="ctab active" data-tab="wkr-log">Activity Log</div>
+    <div class="content-header">
+      <div class="content-tabs" id="wkr-tabs">
+        <div class="ctab active" data-tab="wkr-activity">Activity</div>
+      </div>
+      <button class="log-toggle-btn" id="wkr-log-toggle">Log</button>
     </div>
 
-    <div class="tab-pane active" id="tab-wkr-log">
-      <div id="log-pane-worker">
-        <div class="log-list" id="wkr-log-list"></div>
+    <!-- Worker log terminal (hidden by default) -->
+    <div class="log-terminal" id="wkr-log-terminal" style="display:none">
+      <div class="log-terminal-bar">
+        <span class="log-terminal-title">Worker Log</span>
+        <button class="log-terminal-close" id="wkr-log-close">×</button>
+      </div>
+      <div class="log-list" id="wkr-log-list"></div>
+    </div>
+
+    <div class="tab-pane active" id="tab-wkr-activity">
+      <div class="empty-state">
+        <div class="es-icon">⚙️</div>
+        <div class="es-title">Worker ready</div>
+        <div class="es-sub">Tasks will appear here when running. Open the Log to see activity.</div>
       </div>
     </div>
   </div>

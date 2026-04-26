@@ -28,11 +28,11 @@ export async function createBase (storePath, key) {
   const store = new Corestore(storePath)
   const baseKey = key ? Buffer.from(key, 'hex') : null
   const base = new Autobase(store, baseKey, { valueEncoding: 'json', open, apply })
-  await base.ready()
 
   // Create a Hyperdrive on the same store for file transfer
   const drive = new Hyperdrive(store)
-  await drive.ready()
+
+  await Promise.all([base.ready(), drive.ready()])
 
   const BOOTSTRAP = process.env.BOOTSTRAP
   const swarmOpts = BOOTSTRAP

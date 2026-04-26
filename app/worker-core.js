@@ -8,17 +8,22 @@ import fs from 'fs'
 import { NETWORK_TOPIC } from './base-setup.js'
 import { executeTask } from './worker.js'
 import { addDonated, loadReputation, getScore } from './reputation.js'
+import { detectCapabilities } from './capabilities.js'
+import { ThreadPool } from './thread-pool.js'
 import EventEmitter from 'events'
 
 const IDLE_TIMEOUT = 15000
 
 export class WorkerCore extends EventEmitter {
-  constructor ({ storePath = null, allowShell = false, bootstrap = null } = {}) {
+  constructor ({ storePath = null, allowShell = false, bootstrap = null, threads = 4 } = {}) {
     super()
     this.workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
     this.storePath = storePath || `./store-${this.workerId}`
     this.allowShell = allowShell
     this.bootstrap = bootstrap
+    this.threads = threads
+    this._pool = null
+    this._caps = {}
 
     this._discoverySwarm = null
     this._replicationSwarm = null
@@ -85,9 +90,21 @@ export class WorkerCore extends EventEmitter {
       })
     })
 
-    await this._discoverySwarm.flush()
+    this._caps = await detectCapabilities().catch(() => ({}))
+
+    try {
+      this._pool = new ThreadPool(this.threads)
+      await this._pool.start()
+    } catch (err) {
+      console.log(`[worker] Thread pool unavailable: ${err.message} — running tasks on main thread`)
+      this._pool = null
+    }
+
     this.emit('ready', { workerId: this.workerId })
     this._emitStatus()
+
+    // Flush in background — don't block ready on DHT peer discovery
+    this._discoverySwarm.flush().catch(() => {})
 
     setInterval(() => {
       if (this._searching) this._pickBestRequester()
@@ -216,7 +233,7 @@ export class WorkerCore extends EventEmitter {
     await this._outputDrive.ready()
     this._mountedDrives.clear()
 
-    conn.write(JSON.stringify({ type: 'join-request', role: 'worker', writerKey, workerId: this.workerId }))
+    conn.write(JSON.stringify({ type: 'join-request', role: 'worker', writerKey, workerId: this.workerId, capabilities: this._caps }))
 
     this._replicationSwarm.join(this._base.discoveryKey, { client: true, server: true })
     for (const c of this._replicationSwarm.connections) this._store.replicate(c)
@@ -291,7 +308,10 @@ export class WorkerCore extends EventEmitter {
 
         const t0 = Date.now()
         try {
-          const output = await executeTask(entry, inputDrive, this._outputDrive)
+          const isPureCompute = !entry.driveKey && entry.taskType !== 'shell'
+          const output = (isPureCompute && this._pool)
+            ? (await this._pool.runTask(entry)).output
+            : await executeTask(entry, inputDrive, this._outputDrive)
           const elapsed = Date.now() - t0
 
           const outputFiles = []
@@ -346,6 +366,7 @@ export class WorkerCore extends EventEmitter {
   async stop () {
     this._stopIdleTimer()
     if (this._taskPollTimer) clearInterval(this._taskPollTimer)
+    if (this._pool) await this._pool.destroy()
     if (this._discoverySwarm) await this._discoverySwarm.destroy()
     if (this._replicationSwarm) await this._replicationSwarm.destroy()
     if (this._base) try { await this._base.close() } catch {}

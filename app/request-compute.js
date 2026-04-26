@@ -9,8 +9,10 @@ import fs from 'fs'
 import readline from 'readline'
 import Hyperswarm from 'hyperswarm'
 
-import { basename } from 'path'
+import { basename, extname } from 'path'
 import { bundleTask } from './bundler.js'
+import { execSync } from 'child_process'
+import http from 'http'
 
 const requesterId = `requester-${crypto.randomUUID().slice(0, 8)}`
 const { base, swarm: replicationSwarm, store, drive, cleanup } = await createBase('./store-requester', null)
@@ -23,6 +25,86 @@ console.log('╠═════════════════════�
 console.log(`║  ID: ${requesterId}              ║`)
 console.log('╚═══════════════════════════════════════════╝')
 console.log('')
+
+// Live preview server
+let previewServer = null
+let previewPngFile = null
+
+function startPreviewServer (pngFile) {
+  if (previewServer) return // already running
+  previewPngFile = pngFile
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<title>PeerCompute — Live Render</title>
+<style>
+  body { margin: 0; background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: monospace; color: #aaa; }
+  h2 { margin: 0 0 12px; font-size: 14px; letter-spacing: 2px; color: #555; }
+  #img-wrap { position: relative; }
+  img { display: block; max-width: 90vw; max-height: 85vh; image-rendering: pixelated; border: 1px solid #333; }
+  #status { margin-top: 10px; font-size: 12px; color: #444; }
+</style>
+</head>
+<body>
+<h2>PEERCOMPUTE — LIVE RENDER</h2>
+<div id="img-wrap"><img id="img" src="/image?t=0" /></div>
+<div id="status">waiting for chunks…</div>
+<script>
+  let t = 0
+  let chunks = 0
+  let total = 0
+  setInterval(async () => {
+    const res = await fetch('/meta')
+    const meta = await res.json()
+    if (meta.chunks !== chunks || meta.total !== total) {
+      chunks = meta.chunks; total = meta.total
+      document.getElementById('status').textContent =
+        chunks === total && total > 0
+          ? 'COMPLETE — ' + chunks + '/' + total + ' blocks rendered'
+          : chunks + '/' + total + ' blocks received…'
+    }
+    t++
+    document.getElementById('img').src = '/image?t=' + t
+  }, 500)
+</script>
+</body>
+</html>`
+
+  let metaChunks = 0
+  let metaTotal = 0
+
+  previewServer = http.createServer((req, res) => {
+    if (req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html' })
+      res.end(html)
+    } else if (req.url && req.url.startsWith('/image')) {
+      if (previewPngFile && fs.existsSync(previewPngFile)) {
+        try {
+          const data = fs.readFileSync(previewPngFile)
+          res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' })
+          res.end(data)
+        } catch { res.writeHead(500); res.end() }
+      } else {
+        // Serve 1x1 black PNG if no file yet
+        const black = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
+        res.writeHead(200, { 'Content-Type': 'image/png' })
+        res.end(black)
+      }
+    } else if (req.url === '/meta') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ chunks: metaChunks, total: metaTotal }))
+    } else {
+      res.writeHead(404); res.end()
+    }
+  })
+
+  previewServer.meta = (chunks, total) => { metaChunks = chunks; metaTotal = total }
+  previewServer.listen(7842, '127.0.0.1', () => {
+    console.log('[~] Preview server: http://localhost:7842')
+    try { execSync('open http://localhost:7842') } catch {}
+  })
+}
 
 // Track state
 const printedResults = new Set()
@@ -180,6 +262,39 @@ base.on('update', async () => {
           job.results.set(chunkIndex, entry.error ? { error: entry.error } : entry.output)
           console.log(`\n[<] Chunk ${chunkIndex + 1}/${job.totalChunks} done (by ${entry.by}, ${entry.elapsed || '?'}ms)`)
 
+          // Progressive preview: works for both strips and grid blocks
+          if (job.outputFile && extname(job.outputFile) === '.ppm') {
+            try {
+              const received = [...job.results.values()].filter(r => r && r.rows)
+              if (received.length > 0) {
+                // Always use full image dimensions so blocks appear at correct position
+                const fullW = job.imageWidth || received.reduce((m, r) => Math.max(m, r.endCol ?? r.rows[0].length), 0)
+                const fullH = job.imageHeight || received.reduce((m, r) => Math.max(m, r.endRow), 0)
+                const grid = Array.from({ length: fullH }, () => new Array(fullW).fill(null))
+                for (const block of received) {
+                  const colOffset = block.startCol ?? 0
+                  for (let y = 0; y < block.rows.length; y++) {
+                    for (let x = 0; x < block.rows[y].length; x++) {
+                      grid[block.startRow + y][colOffset + x] = block.rows[y][x]
+                    }
+                  }
+                }
+                let ppm = `P3\n${fullW} ${fullH}\n255\n`
+                for (const row of grid) {
+                  ppm += row.map(px => px ? `${px[0]} ${px[1]} ${px[2]}` : '40 40 40').join(' ') + '\n'
+                }
+                const pngFile = job.outputFile.replace('.ppm', '.png')
+                fs.writeFileSync(job.outputFile, ppm)
+                try { execSync(`magick ${job.outputFile} ${pngFile} 2>/dev/null || convert ${job.outputFile} ${pngFile}`) } catch {}
+                if (job.results.size === 1) {
+                  try { execSync(`open -g ${pngFile}`) } catch {}
+                }
+                if (previewServer) previewServer.meta(received.length, job.totalChunks)
+                console.log(`    [~] Preview updated: ${pngFile} (${received.length}/${job.totalChunks} blocks)`)
+              }
+            } catch {}
+          }
+
           if (job.results.size === job.totalChunks) {
             const errors = [...job.results.values()].filter(r => r && r.error)
             if (errors.length > 0) {
@@ -189,8 +304,18 @@ base.on('update', async () => {
               try {
                 const final = job.joinFn(ordered)
                 console.log(`\n[*] JOB ${jobId.slice(0, 8)}… COMPLETE`)
-                const out = typeof final === 'string' ? final : JSON.stringify(final, null, 2)
-                console.log(out.length > 2000 ? out.slice(0, 2000) + '…' : out)
+                if (job.outputFile) {
+                  fs.writeFileSync(job.outputFile, typeof final === 'string' ? final : JSON.stringify(final, null, 2))
+                  console.log(`    Saved → ${job.outputFile}`)
+                  if (extname(job.outputFile) === '.ppm') {
+                    const pngFile = job.outputFile.replace('.ppm', '.png')
+                    try { execSync(`magick ${job.outputFile} ${pngFile} 2>/dev/null || convert ${job.outputFile} ${pngFile}`) } catch {}
+                    console.log(`    Saved → ${pngFile}`)
+                  }
+                } else {
+                  const out = typeof final === 'string' ? final : JSON.stringify(final, null, 2)
+                  console.log(out.length > 2000 ? out.slice(0, 2000) + '…' : out)
+                }
               } catch (err) {
                 console.log(`[!] Join failed: ${err.message}`)
               }
@@ -254,12 +379,14 @@ Commands:
                          Tasks get: readFile(path), listFiles(), writeFile(path, data), emit(data)
                          Use emit(data) to stream intermediate results back in real-time
   file <path.js>       Send a .js file as a single task
-  bundle <path.js> [arg1 arg2 ...]
+  bundle <path.js> [argNames...] [-- values...]
                        Bundle a task file + its npm deps into one string, send to worker
                          Task file must: export default function (args...) { ... }
-                         Example: bundle tasks/resize.js inputPath outputPath
-  job <path.js> [n]    Run a distributed job (split across n workers, default=all)
+                         Example: bundle tasks/slugify-text.js text -- "Hello World"
+  job <path.js> [n] [cols]
+                       Run a distributed job (split across n workers, default=all)
                          Job file exports: data, split(data,n), compute(chunk), join(results)
+                         Extra args passed to split: e.g. "job file.js 2 3" → split(data,2,3) grid
                          Optionally exports: requires (e.g. { hasGPU: true })
   shell [--requires k=v,...] <command>
                        Send a shell command to execute on a worker
@@ -308,7 +435,8 @@ rl.on('line', async (line) => {
   } else if (input.startsWith('job ')) {
     const parts = input.slice(4).trim().split(/\s+/)
     const filePath = parts[0]
-    const nOverride = parts[1] ? parseInt(parts[1]) : null
+    const extraArgs = parts.slice(1).map(p => parseInt(p)).filter(n => !isNaN(n))
+    const nOverride = extraArgs[0] || null
     try {
       const absPath = resolve(filePath)
       const mod = await import(pathToFileURL(absPath).href)
@@ -320,7 +448,7 @@ rl.on('line', async (line) => {
 
       const jobRequires = mod.requires || null
       const n = nOverride || Math.max(1, workers.size)
-      const chunks = mod.split(mod.data, n)
+      const chunks = mod.split(mod.data, n, ...extraArgs.slice(1))
       const jobId = crypto.randomUUID()
       const computeCode = mod.compute.toString()
       const code = `const compute = ${computeCode}; return compute(chunk)`
@@ -333,10 +461,24 @@ rl.on('line', async (line) => {
       if (jobRequires) console.log(`[>] Job requires: ${JSON.stringify(jobRequires)}`)
       console.log(`[>] Job ${jobId.slice(0, 8)}… splitting into ${chunks.length} chunks across ${workerIds.length || '?'} worker(s)`)
 
+      const jobOutputFile = mod.outputFile || null
+      if (jobOutputFile && extname(jobOutputFile) === '.ppm') {
+        const pngFile = jobOutputFile.replace('.ppm', '.png')
+        startPreviewServer(pngFile)
+        if (previewServer) previewServer.meta(0, chunks.length)
+      }
+
+      // Infer full image dimensions from data or chunks for preview positioning
+      const imageWidth = mod.data.width || chunks.reduce((m, c) => Math.max(m, c.endCol ?? (c.rows ? 0 : 0)), 0) || null
+      const imageHeight = mod.data.height || chunks.reduce((m, c) => Math.max(m, c.endRow ?? 0), 0) || null
+
       pendingJobs.set(jobId, {
         totalChunks: chunks.length,
         results: new Map(),
-        joinFn: mod.join
+        joinFn: mod.join,
+        outputFile: jobOutputFile,
+        imageWidth,
+        imageHeight
       })
 
       for (let i = 0; i < chunks.length; i++) {
@@ -387,9 +529,20 @@ rl.on('line', async (line) => {
     }
 
   } else if (input.startsWith('bundle ')) {
-    const parts = input.slice(7).trim().split(/\s+/)
+    const raw = input.slice(7).trim()
+    const sepIdx = raw.indexOf(' -- ')
+    let beforeSep, afterSep
+    if (sepIdx !== -1) {
+      beforeSep = raw.slice(0, sepIdx).trim()
+      afterSep = raw.slice(sepIdx + 4).trim()
+    } else {
+      beforeSep = raw
+      afterSep = ''
+    }
+    const parts = beforeSep.split(/\s+/)
     const filePath = parts[0]
     const argNames = parts.slice(1)
+    const args = afterSep ? afterSep.match(/"[^"]*"|'[^']*'|\S+/g).map(s => s.replace(/^["']|["']$/g, '')) : []
     try {
       const absPath = resolve(filePath)
       console.log(`[~] Bundling ${filePath} with esbuild…`)
@@ -399,7 +552,7 @@ rl.on('line', async (line) => {
       }
       const id = crypto.randomUUID()
       await base.append({
-        type: 'task', id, code, argNames, args: [],
+        type: 'task', id, code, argNames, args,
         bundled: true,
         driveKey, by: requesterId, ts: Date.now()
       })

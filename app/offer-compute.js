@@ -9,38 +9,16 @@ import { NETWORK_TOPIC } from './base-setup.js'
 import { executeTask } from './worker.js'
 import { addDonated, loadReputation, getScore } from './reputation.js'
 import { detectCapabilities, meetsRequirements } from './capabilities.js'
+import os from 'os'
+import { ThreadPool } from './thread-pool.js'
 
 const workerId = `worker-${crypto.randomUUID().slice(0, 8)}`
 const storePath = `./store-${workerId}`
-const IDLE_TIMEOUT = 15000 // leave after 15s with no tasks
+const IDLE_TIMEOUT = 60000 // leave after 60s with no tasks
 const ALLOW_SHELL = process.env.ALLOW_SHELL === '1' || process.env.ALLOW_SHELL === 'true'
-
-function createStreamEmitter (base, taskId, workerId) {
-  let queue = Promise.resolve()
-  let seq = 0
-
-  function onEmit ({ data, channel }) {
-    const chunkSeq = seq++
-    queue = queue.then(() =>
-      base.append({
-        type: 'stream-chunk',
-        taskId,
-        seq: chunkSeq,
-        data,
-        channel,
-        by: workerId,
-        ts: Date.now()
-      })
-    ).catch(err => {
-      console.log(`[!] Stream chunk append failed: ${err.message}`)
-    })
-  }
-
-  async function flush () { await queue }
-  function getSeq () { return seq }
-
-  return { onEmit, flush, getSeq }
-}
+const POOL_SIZE = Number(process.env.POOL_SIZE) || Math.max(1, os.cpus().length - 1)
+const pool = new ThreadPool(POOL_SIZE)
+await pool.start()
 
 console.log('╔═══════════════════════════════════════════╗')
 console.log('║         OFFER COMPUTE — Worker            ║')
@@ -49,6 +27,7 @@ console.log(`║  Worker ID: ${workerId}                ║`)
 console.log('╚═══════════════════════════════════════════╝')
 console.log('')
 console.log(`Idle timeout: ${IDLE_TIMEOUT / 1000}s | Store: ${storePath}`)
+console.log(`Thread pool: ${POOL_SIZE} thread(s) | CPUs: ${os.cpus().length}`)
 console.log(`Shell execution: ${ALLOW_SHELL ? 'ENABLED' : 'DISABLED (set ALLOW_SHELL=1 to enable)'}\n`)
 
 const BOOTSTRAP = process.env.BOOTSTRAP
@@ -126,14 +105,24 @@ async function leaveCurrentRequester () {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
   if (taskPollTimer) { clearInterval(taskPollTimer); taskPollTimer = null }
 
-  // Close old base before leaving the swarm topic
+  // Leave Autobase replication topic on the replication swarm
+  if (leavingDiscoveryKey) {
+    await replicationSwarm.leave(leavingDiscoveryKey)
+  }
+
+  // Close old base and store to clean up replication streams
   if (leavingBase) {
     try { await leavingBase.close() } catch {}
   }
+  if (leavingStore) {
+    try { await leavingStore.close() } catch {}
+  }
 
-  // Await leave so the topic is fully released before a rejoin
-  if (leavingDiscoveryKey) {
-    await replicationSwarm.leave(leavingDiscoveryKey)
+  // Destroy stale replication connections so the next join() gets fresh ones.
+  // Hyperswarm deduplicates — if an old conn survives, 'connection' won't
+  // fire again and the new store never gets replicated.
+  for (const conn of [...replicationSwarm.connections]) {
+    conn.destroy()
   }
 
   // Remove from pool so we don't rejoin immediately
@@ -187,13 +176,6 @@ async function joinRequester (requesterId, autobaseKey, conn) {
   // This creates a fresh connection to the requester, used only for binary
   // Autobase/Corestore protocol — no JSON interference.
   replicationSwarm.join(base.discoveryKey, { client: true, server: true })
-
-  // Replicate on any already-open connections (may exist from prior session)
-  for (const conn of replicationSwarm.connections) {
-    store.replicate(conn)
-  }
-
-  // Ensure the swarm is connected before we start the idle timer
   await replicationSwarm.flush()
 
   // Watch for tasks on new updates
@@ -225,6 +207,7 @@ async function processTasks () {
   processing = true
 
   let didWork = false
+  const poolPromises = []
 
   try {
     for (let i = 0; i < base.view.length; i++) {
@@ -253,68 +236,124 @@ async function processTasks () {
       const codePreview = entry.taskType === 'shell'
         ? `[SHELL] ${entry.cmd.trim().slice(0, 60)}`
         : entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
-      console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview}`)
 
-      // Mount requester's drive if task has files
-      let inputDrive = null
-      if (entry.driveKey && store) {
-        if (!mountedDrives.has(entry.driveKey)) {
-          const d = new Hyperdrive(store, Buffer.from(entry.driveKey, 'hex'))
-          await d.ready()
-          mountedDrives.set(entry.driveKey, d)
-        }
-        inputDrive = mountedDrives.get(entry.driveKey)
-        // Wait for drive data to sync from requester (Autobase replicates faster than Hyperdrive)
-        for (let attempt = 0; attempt < 10; attempt++) {
-          await inputDrive.update()
-          if (inputDrive.version > 0) break
-          await new Promise(r => setTimeout(r, 500))
-        }
-      }
+      // Route: pure compute → pool (concurrent), shell/file-I/O → main thread (sequential)
+      const needsFiles = entry.code && /\b(readFile|listFiles|writeFile)\b/.test(entry.code)
+      const usePool = entry.taskType !== 'shell' && !needsFiles
 
-      const t0 = performance.now()
-      try {
-        const emitter = createStreamEmitter(base, entry.id, workerId)
-        const output = await executeTask(entry, inputDrive, outputDrive, emitter.onEmit)
-        await emitter.flush()
-        const elapsed = (performance.now() - t0).toFixed(2)
+      if (usePool) {
+        console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [pool]`)
+        const t0 = performance.now()
+        const taskEntry = entry
+        const p = pool.runTask(taskEntry).then(async ({ output, threadId }) => {
+          const elapsed = (performance.now() - t0).toFixed(2)
 
-        // Check if output files were written
-        const outputFiles = []
-        if (outputDrive) {
-          for await (const f of outputDrive.list('/')) {
-            outputFiles.push(f.key)
+          // Guard: base may have been closed if idle timer fired during long task
+          if (!base || !base.writable) {
+            console.log(`[!] Task ${taskEntry.id.slice(0, 8)}… done but lost connection — result dropped`)
+            return
+          }
+
+          const outputFiles = []
+          if (outputDrive) {
+            for await (const f of outputDrive.list('/')) {
+              outputFiles.push(f.key)
+            }
+          }
+
+          await base.append({
+            type: 'result', taskId: taskEntry.id, output,
+            elapsed: Number(elapsed), by: workerId, ts: Date.now(),
+            driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
+            outputFiles: outputFiles.length > 0 ? outputFiles : undefined
+          })
+          tasksDone++
+          totalTasksDone++
+          addDonated(1)
+          const preview = JSON.stringify(output).slice(0, 80)
+          console.log(`[<] Done in ${elapsed}ms | thread #${threadId} | ${preview}`)
+          console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
+        }).catch(async (err) => {
+          if (base && base.writable) {
+            await base.append({
+              type: 'result', taskId: taskEntry.id, error: err.message,
+              by: workerId, ts: Date.now()
+            })
+          }
+          console.log(`[!] Error: ${err.message}\n`)
+        })
+        poolPromises.push(p)
+      } else {
+        console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [main]`)
+
+        // Mount requester's drive if task has files
+        let inputDrive = null
+        if (entry.driveKey && store) {
+          if (!mountedDrives.has(entry.driveKey)) {
+            const d = new Hyperdrive(store, Buffer.from(entry.driveKey, 'hex'))
+            await d.ready()
+            mountedDrives.set(entry.driveKey, d)
+          }
+          inputDrive = mountedDrives.get(entry.driveKey)
+          for (let attempt = 0; attempt < 10; attempt++) {
+            await inputDrive.update()
+            if (inputDrive.version > 0) break
+            await new Promise(r => setTimeout(r, 500))
           }
         }
 
-        const totalChunks = emitter.getSeq()
-        await base.append({
-          type: 'result', taskId: entry.id, output,
-          elapsed: Number(elapsed), by: workerId, ts: Date.now(),
-          driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
-          outputFiles: outputFiles.length > 0 ? outputFiles : undefined,
-          ...(totalChunks > 0 ? { streamed: true, totalChunks } : {})
-        })
-        tasksDone++
-        totalTasksDone++
-        addDonated(1)
-        if (entry.taskType === 'shell' && output) {
-          const stdoutPreview = (output.stdout || '').trim().slice(0, 80)
-          console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
-          if (output.timedOut) console.log(`    [!] Process timed out`)
-        } else {
-          const preview = JSON.stringify(output).slice(0, 80)
-          console.log(`[<] Done in ${elapsed}ms | ${preview}`)
+        const t0 = performance.now()
+        try {
+          const output = await executeTask(entry, inputDrive, outputDrive)
+          const elapsed = (performance.now() - t0).toFixed(2)
+
+          // Guard: base may have been closed if idle timer fired during long task
+          if (!base || !base.writable) {
+            console.log(`[!] Task ${entry.id.slice(0, 8)}… done but lost connection — result dropped`)
+            continue
+          }
+
+          const outputFiles = []
+          if (outputDrive) {
+            for await (const f of outputDrive.list('/')) {
+              outputFiles.push(f.key)
+            }
+          }
+
+          await base.append({
+            type: 'result', taskId: entry.id, output,
+            elapsed: Number(elapsed), by: workerId, ts: Date.now(),
+            driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
+            outputFiles: outputFiles.length > 0 ? outputFiles : undefined
+          })
+          tasksDone++
+          totalTasksDone++
+          addDonated(1)
+          if (entry.taskType === 'shell' && output) {
+            const stdoutPreview = (output.stdout || '').trim().slice(0, 80)
+            console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
+            if (output.timedOut) console.log(`    [!] Process timed out`)
+          } else {
+            const preview = JSON.stringify(output).slice(0, 80)
+            console.log(`[<] Done in ${elapsed}ms | ${preview}`)
+          }
+          console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
+        } catch (err) {
+          if (base && base.writable) {
+            await base.append({
+              type: 'result', taskId: entry.id, error: err.message,
+              by: workerId, ts: Date.now()
+            })
+          }
+          console.log(`[!] Error: ${err.message}\n`)
         }
-        console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
-      } catch (err) {
-        await base.append({
-          type: 'result', taskId: entry.id, error: err.message,
-          by: workerId, ts: Date.now()
-        })
-        console.log(`[!] Error: ${err.message}\n`)
       }
       resetIdleTimer()
+    }
+
+    // Wait for all pool tasks dispatched this cycle to finish
+    if (poolPromises.length > 0) {
+      await Promise.all(poolPromises)
     }
   } finally {
     processing = false
@@ -455,6 +494,7 @@ process.on('SIGINT', async () => {
   console.log(`\nShutting down… (${totalTasksDone} tasks completed, reputation: score=${getScore(rep)})`)
   if (idleTimer) clearTimeout(idleTimer)
   if (taskPollTimer) clearInterval(taskPollTimer)
+  await pool.destroy()
   await discoverySwarm.destroy()
   await replicationSwarm.destroy()
   if (base) try { await base.close() } catch {}
