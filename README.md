@@ -35,6 +35,7 @@ The core innovation is using **Autobase as a distributed task queue**. Nobody ha
 - **Task claiming** — workers write claims to the shared log before executing, preventing duplicate work across peers
 - **Distributed jobs** — split data across N workers, join results; live image preview as chunks complete
 - **Web dashboard** — localhost HTTP UI with real-time task queue, worker stats, job scheduling, and DAG visualization
+- **P2P file transfer** — upload and download files between peers via Hyperdrive; task code gets injected `readFile()`/`writeFile()` helpers for direct drive I/O
 - **Reputation & roaming** — workers rank requesters by reputation score and automatically roam to where work is
 
 ### Supported Commands
