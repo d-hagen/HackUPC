@@ -2,7 +2,7 @@
 
 **A zero-infrastructure P2P compute-sharing platform built on the Pear protocol. Your swarm is your supercomputer.**
 
-No servers, no cloud, no blockchain, no tokens — just peers sharing CPU power over Hypercore.
+No servers, no cloud, no blockchain, no tokens — just peers sharing computation power over Hypercore.
 
 ---
 
