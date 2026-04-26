@@ -5,11 +5,13 @@ import { parentPort, workerData } from 'worker_threads'
 
 parentPort.on('message', async (msg) => {
   if (msg.type === 'execute') {
-    const { taskId, code, argNames = [], args = [] } = msg
+    const { taskId, code, argNames = [], args = [], deps } = msg
 
     try {
-      const fn = new (Object.getPrototypeOf(async function () {}).constructor)(...argNames, code)
-      const result = await fn(...args)
+      const allArgNames = deps ? [...argNames, 'deps'] : argNames
+      const allArgs = deps ? [...args, deps] : args
+      const fn = new (Object.getPrototypeOf(async function () {}).constructor)(...allArgNames, code)
+      const result = await fn(...allArgs)
       parentPort.postMessage({
         type: 'result',
         taskId,

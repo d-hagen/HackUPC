@@ -67,12 +67,12 @@ export class ThreadPool {
   }
 
   // Run a pure compute task (no Hyperdrive access) on a pool thread
-  // Returns a promise that resolves with the task output
-  runTask (task) {
+  // deps: optional array of dependency outputs to inject as 'deps' argument
+  runTask (task, deps) {
     if (this.destroyed) return Promise.reject(new Error('Pool is destroyed'))
 
     return new Promise((resolve, reject) => {
-      this.queue.push({ task, resolve, reject })
+      this.queue.push({ task, deps, resolve, reject })
       this._drain()
     })
   }
@@ -82,7 +82,7 @@ export class ThreadPool {
       const thread = this.workers.find(t => !t.busy)
       if (!thread) break // all threads busy, wait
 
-      const { task, resolve, reject } = this.queue.shift()
+      const { task, deps, resolve, reject } = this.queue.shift()
       thread.busy = true
       this.running++
 
@@ -110,7 +110,8 @@ export class ThreadPool {
         taskId,
         code: task.code,
         argNames: task.argNames || [],
-        args: task.args || []
+        args: task.args || [],
+        deps: deps && deps.length > 0 ? deps : undefined
       })
     }
   }

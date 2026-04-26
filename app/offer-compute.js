@@ -262,7 +262,7 @@ async function processTasks () {
         console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [pool]`)
         const t0 = performance.now()
         const taskEntry = entry
-        const p = pool.runTask(taskEntry).then(async ({ output, threadId }) => {
+        const p = pool.runTask(taskEntry, deps).then(async ({ output, threadId }) => {
           const elapsed = (performance.now() - t0).toFixed(2)
 
           // Guard: base may have been closed if idle timer fired during long task
