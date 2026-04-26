@@ -52,7 +52,7 @@ The core innovation is using **Autobase as a distributed task queue**. Nobody ha
 
 Or use the **web dashboard** — schedule jobs, monitor tasks, and view live previews from the browser.
 
-> Demo video: *[TODO: add link]*
+> Demo video: https://youtu.be/vqcRk9Q8bWk
 
 ### How It Compares
 
