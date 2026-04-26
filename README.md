@@ -64,7 +64,6 @@ Or use the **web dashboard** — schedule jobs, monitor tasks, and view live pre
 | Task queue | Autobase P2P log | Server database | Smart contracts | Centralized |
 | Dependency bundling | esbuild (auto-inlined) | Manual packaging | Docker containers | N/A |
 | Hardware routing | Auto-detect GPU/CPU/RAM | Manual project selection | Provider profiles | Manual selection |
-| Code | ~1,500 lines JS | Tens of thousands | Tens of thousands + Docker | Proprietary |
 
 ### Why This Matters for Pear/Holepunch
 
