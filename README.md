@@ -68,6 +68,32 @@ Or use the **web dashboard** — schedule jobs, monitor tasks, and view live pre
 
 ---
 
+## Demo Jobs
+
+### Image Transform — Distributed Parallel Filters
+
+Splits an image into an R x C grid of blocks and distributes them across workers. Each block gets a different pixel-level filter applied (grayscale, sepia, invert, warm, cool, posterize, edge detect, contrast). Workers self-select blocks and process them concurrently across all thread pool threads. The requester reassembles the blocks into a single output image. A live preview at `http://localhost:7842` shows blocks filling in as they complete.
+
+Requires `img.png` in the `app/` directory and ImageMagick installed on the requester.
+
+```bash
+# 8 rows x 6 columns = 48 grid blocks
+job jobs/image-transform-job.js 8 6
+```
+
+### Wave-front DAG — Dependency-Driven Parallel Execution
+
+An NxN grid of tasks where each cell `(r,c)` depends on its top neighbor `(r-1,c)` and left neighbor `(r,c-1)`. This creates a diagonal wavefront pattern — all cells on the same anti-diagonal `r+c=k` are independent and execute in parallel. Workers don't get pre-assigned tasks; instead they check which tasks have all dependencies resolved and self-select the next ready one. Produces a blue-to-red gradient image and a live canvas-based DAG visualization showing blocked, ready, and completed tasks.
+
+```bash
+# 6x6 grid, 80px cells, 250ms simulated delay per task
+job jobs/wave-dag-job.js 6 80 250
+```
+
+Opens a live preview with two panels: the color image building up and a DAG graph showing blocked (blue), ready (orange), and done (green) tasks propagating diagonally.
+
+---
+
 ## What's Built (Working)
 
 ### Core System
@@ -134,46 +160,10 @@ Or use the **web dashboard** — schedule jobs, monitor tasks, and view live pre
 | Sum array | `jobs/sum-job.js` | Splits 1000 numbers, sums in parallel, joins |
 | Find primes | `jobs/primes-job.js` | Splits range, sieves in parallel, merges sorted |
 | Mandelbrot | `jobs/mandelbrot-job.js` | Splits image into row chunks, renders in parallel, assembles ASCII art |
-| Image transform | `jobs/image-transform-job.js` | Splits an image into a grid of blocks, applies a different filter (grayscale, sepia, invert, warm, cool, etc.) per block, reassembles into a single output image with live preview |
-| Wave-front DAG | `jobs/wave-dag-job.js` | NxN grid of tasks where each cell depends on its top and left neighbor. Tasks execute in diagonal wavefronts — all cells on the same anti-diagonal run in parallel. Produces a color-gradient image and a live DAG visualization |
+| Image transform | `jobs/image-transform-job.js` | Grid-based distributed image filtering with live preview |
+| Wave-front DAG | `jobs/wave-dag-job.js` | Dependency-driven diagonal wavefront with DAG visualization |
 | GPU benchmark | `jobs/gpu-benchmark-job.js` | Splits matrix sizes across workers, benchmarks GPU via PyTorch |
 | Statistics (Python) | `jobs/stats-task.js` + `jobs/stats.py` | Computes sum/count/min/max/mean on data via Python subprocess |
-
-#### Running the image transform job
-
-Requires `img.png` in the `app/` directory and ImageMagick installed on the requester.
-
-```bash
-# In the requester prompt:
-# 8 rows x 6 columns = 48 grid blocks, each with a different filter
-job jobs/image-transform-job.js 8 6
-```
-
-A live preview opens at `http://localhost:7842` — blocks fill in as workers complete them.
-
-#### Running the wave-front DAG job
-
-```bash
-# In the requester prompt:
-# 6x6 grid, 80px cells, 250ms delay per task
-job jobs/wave-dag-job.js 6 80 250
-```
-
-Opens a live preview with two panels: the color image building up and a DAG graph showing blocked (blue), ready (orange), and done (green) tasks propagating diagonally.
-
-### Tests & Demos
-| File | What it tests |
-|---|---|
-| `test/index.test.js` | 20+ bundling tests — npm dep inlining, execution, error propagation |
-| `test/slugify-bundle.test.js` | 14 slugify-specific tests — special chars, unicode, edge cases |
-| `test/test-capabilities.js` | 39 capability tests — requirement matching, worker selection, device routing |
-| `test/test-pipeline.js` | Full E2E pipeline — upload Python script to Hyperdrive, split data, workers run Python, join results |
-| `demos/demo.js` | Self-contained: matrix multiply + Mandelbrot with Hyperswarm fallback |
-| `demos/demo-generic.js` | 6 different generic tasks (arithmetic, fibonacci, matrix, primes, sort, mandelbrot) |
-| `test/test-full.js` | Matrix + Mandelbrot via `replicateAndSync` |
-| `test/test-jobs.js` | Split/join with 2 workers, all 3 job types |
-| `test/test-marketplace.js` | 2 requesters + 2 workers, isolation verification |
-| `test/test-hyperdrive.js` | File upload/download between requester and worker via Hyperdrive |
 
 ---
 
