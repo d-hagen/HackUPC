@@ -215,191 +215,201 @@ async function processTasks () {
   processing = true
 
   let didWork = false
-  const poolPromises = []
-
   try {
-    // Phase 1: scan log once — build result/claim index and collect dispatchable tasks
-    const resultIndex = new Map()  // taskId -> output
-    const claimed = new Set()      // taskIds claimed by any worker
-    const allEntries = []
-    for (let i = 0; i < base.view.length; i++) {
-      const e = await base.view.get(i)
-      allEntries.push(e)
-      if (e.type === 'result') resultIndex.set(e.taskId, e.output)
-      if (e.type === 'claim') claimed.add(e.taskId)
-    }
+    // Re-scan loop: after each batch completes, immediately re-scan for more
+    // tasks that replicated during execution instead of waiting for the next trigger.
+    while (base && base.writable) {
+      const poolPromises = []
+      let batchWork = false
 
-    const poolBatch = []   // tasks to dispatch to thread pool at once
-    const mainBatch = []   // tasks that need main thread (shell/file-I/O)
-    const freeThreads = pool.available
-
-    for (const entry of allEntries) {
-      if (entry.type !== 'task' || completed.has(entry.id)) continue
-      if (entry.taskType === 'shell') {
-        if (!ALLOW_SHELL || !entry.cmd) continue
-      } else {
-        if (!entry.code) continue
-      }
-      if (entry.assignedTo && entry.assignedTo !== workerId) continue
-      if (entry.requires && !meetsRequirements(entry.requires, myCapabilities)) continue
-
-      // Already has a result
-      if (resultIndex.has(entry.id)) { completed.add(entry.id); continue }
-
-      // Already claimed by another worker — skip
-      if (claimed.has(entry.id)) continue
-
-      // Block on unresolved dependencies
-      if (entry.dependsOn && entry.dependsOn.length > 0) {
-        const missing = entry.dependsOn.filter(id => !resultIndex.has(id))
-        if (missing.length > 0) { resetIdleTimer(); continue }
+      // Phase 1: scan log once — build result/claim index and collect dispatchable tasks
+      await base.update()
+      const resultIndex = new Map()  // taskId -> output
+      const claimed = new Set()      // taskIds claimed by any worker
+      const allEntries = []
+      for (let i = 0; i < base.view.length; i++) {
+        const e = await base.view.get(i)
+        allEntries.push(e)
+        if (e.type === 'result') resultIndex.set(e.taskId, e.output)
+        if (e.type === 'claim') claimed.add(e.taskId)
       }
 
-      // Collect dep outputs in order for injection
-      const deps = entry.dependsOn
-        ? entry.dependsOn.map(id => resultIndex.get(id))
-        : []
+      const poolBatch = []   // tasks to dispatch to thread pool at once
+      const mainBatch = []   // tasks that need main thread (shell/file-I/O)
+      const freeThreads = pool.available
 
-      const needsFiles = entry.code && /\b(readFile|listFiles|writeFile)\b/.test(entry.code)
-      const usePool = entry.taskType !== 'shell' && !needsFiles
-
-      if (usePool) {
-        // Only grab as many pool tasks as we have free threads
-        if (poolBatch.length >= freeThreads) continue
-        poolBatch.push({ entry, deps })
-      } else {
-        mainBatch.push({ entry, deps })
-      }
-    }
-
-    // Phase 2: write claims for all tasks we're about to execute, then dispatch
-    for (const { entry } of [...poolBatch, ...mainBatch]) {
-      completed.add(entry.id)
-      await base.append({ type: 'claim', taskId: entry.id, by: workerId, ts: Date.now() })
-    }
-
-    for (const { entry, deps } of poolBatch) {
-      didWork = true
-      stopIdleTimer()
-      const codePreview = entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
-      console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [pool]`)
-      const t0 = performance.now()
-      const taskEntry = entry
-      const p = pool.runTask(taskEntry, deps).then(async ({ output, threadId }) => {
-        const elapsed = (performance.now() - t0).toFixed(2)
-
-        // Guard: base may have been closed if idle timer fired during long task
-        if (!base || !base.writable) {
-          console.log(`[!] Task ${taskEntry.id.slice(0, 8)}… done but lost connection — result dropped`)
-          return
-        }
-
-        const outputFiles = []
-        if (outputDrive) {
-          for await (const f of outputDrive.list('/')) {
-            outputFiles.push(f.key)
-          }
-        }
-
-        await base.append({
-          type: 'result', taskId: taskEntry.id, output,
-          elapsed: Number(elapsed), by: workerId, ts: Date.now(),
-          driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
-          outputFiles: outputFiles.length > 0 ? outputFiles : undefined
-        })
-        tasksDone++
-        totalTasksDone++
-        addDonated(1)
-        const preview = JSON.stringify(output).slice(0, 80)
-        console.log(`[<] Done in ${elapsed}ms | thread #${threadId} | ${preview}`)
-        console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
-      }).catch(async (err) => {
-        if (base && base.writable) {
-          await base.append({
-            type: 'result', taskId: taskEntry.id, error: err.message,
-            by: workerId, ts: Date.now()
-          })
-        }
-        console.log(`[!] Error: ${err.message}\n`)
-      })
-      poolPromises.push(p)
-    }
-
-    // Phase 3: run main-thread tasks sequentially (shell/file-I/O)
-    for (const { entry, deps } of mainBatch) {
-      didWork = true
-      stopIdleTimer()
-      const codePreview = entry.taskType === 'shell'
-        ? `[SHELL] ${entry.cmd.trim().slice(0, 60)}`
-        : entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
-      console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [main]`)
-
-      // Mount requester's drive if task has files
-      let inputDrive = null
-      if (entry.driveKey && store) {
-        if (!mountedDrives.has(entry.driveKey)) {
-          const d = new Hyperdrive(store, Buffer.from(entry.driveKey, 'hex'))
-          await d.ready()
-          mountedDrives.set(entry.driveKey, d)
-        }
-        inputDrive = mountedDrives.get(entry.driveKey)
-        for (let attempt = 0; attempt < 10; attempt++) {
-          await inputDrive.update()
-          if (inputDrive.version > 0) break
-          await new Promise(r => setTimeout(r, 500))
-        }
-      }
-
-      const t0 = performance.now()
-      try {
-        const output = await executeTask(entry, inputDrive, outputDrive, null, deps)
-        const elapsed = (performance.now() - t0).toFixed(2)
-
-        if (!base || !base.writable) {
-          console.log(`[!] Task ${entry.id.slice(0, 8)}… done but lost connection — result dropped`)
-          continue
-        }
-
-        const outputFiles = []
-        if (outputDrive) {
-          for await (const f of outputDrive.list('/')) {
-            outputFiles.push(f.key)
-          }
-        }
-
-        await base.append({
-          type: 'result', taskId: entry.id, output,
-          elapsed: Number(elapsed), by: workerId, ts: Date.now(),
-          driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
-          outputFiles: outputFiles.length > 0 ? outputFiles : undefined
-        })
-        tasksDone++
-        totalTasksDone++
-        addDonated(1)
-        if (entry.taskType === 'shell' && output) {
-          const stdoutPreview = (output.stdout || '').trim().slice(0, 80)
-          console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
-          if (output.timedOut) console.log(`    [!] Process timed out`)
+      for (const entry of allEntries) {
+        if (entry.type !== 'task' || completed.has(entry.id)) continue
+        if (entry.taskType === 'shell') {
+          if (!ALLOW_SHELL || !entry.cmd) continue
         } else {
-          const preview = JSON.stringify(output).slice(0, 80)
-          console.log(`[<] Done in ${elapsed}ms | ${preview}`)
+          if (!entry.code) continue
         }
-        console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
-      } catch (err) {
-        if (base && base.writable) {
-          await base.append({
-            type: 'result', taskId: entry.id, error: err.message,
-            by: workerId, ts: Date.now()
-          })
-        }
-        console.log(`[!] Error: ${err.message}\n`)
-      }
-      resetIdleTimer()
-    }
+        if (entry.assignedTo && entry.assignedTo !== workerId) continue
+        if (entry.requires && !meetsRequirements(entry.requires, myCapabilities)) continue
 
-    // Wait for all pool tasks dispatched this cycle to finish
-    if (poolPromises.length > 0) {
-      await Promise.all(poolPromises)
+        // Already has a result
+        if (resultIndex.has(entry.id)) { completed.add(entry.id); continue }
+
+        // Already claimed by another worker — skip
+        if (claimed.has(entry.id)) continue
+
+        // Block on unresolved dependencies
+        if (entry.dependsOn && entry.dependsOn.length > 0) {
+          const missing = entry.dependsOn.filter(id => !resultIndex.has(id))
+          if (missing.length > 0) { resetIdleTimer(); continue }
+        }
+
+        // Collect dep outputs in order for injection
+        const deps = entry.dependsOn
+          ? entry.dependsOn.map(id => resultIndex.get(id))
+          : []
+
+        const needsFiles = entry.code && /\b(readFile|listFiles|writeFile)\b/.test(entry.code)
+        const usePool = entry.taskType !== 'shell' && !needsFiles
+
+        if (usePool) {
+          // Only grab as many pool tasks as we have free threads
+          if (poolBatch.length >= freeThreads) continue
+          poolBatch.push({ entry, deps })
+        } else {
+          mainBatch.push({ entry, deps })
+        }
+      }
+
+      // Nothing to do this cycle — break out of re-scan loop
+      if (poolBatch.length === 0 && mainBatch.length === 0) break
+
+      // Phase 2: write claims for all tasks we're about to execute, then dispatch
+      for (const { entry } of [...poolBatch, ...mainBatch]) {
+        completed.add(entry.id)
+        await base.append({ type: 'claim', taskId: entry.id, by: workerId, ts: Date.now() })
+      }
+
+      for (const { entry, deps } of poolBatch) {
+        batchWork = true
+        stopIdleTimer()
+        const codePreview = entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
+        console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [pool]`)
+        const t0 = performance.now()
+        const taskEntry = entry
+        const p = pool.runTask(taskEntry, deps).then(async ({ output, threadId }) => {
+          const elapsed = (performance.now() - t0).toFixed(2)
+
+          if (!base || !base.writable) {
+            console.log(`[!] Task ${taskEntry.id.slice(0, 8)}… done but lost connection — result dropped`)
+            return
+          }
+
+          const outputFiles = []
+          if (outputDrive) {
+            for await (const f of outputDrive.list('/')) {
+              outputFiles.push(f.key)
+            }
+          }
+
+          await base.append({
+            type: 'result', taskId: taskEntry.id, output,
+            elapsed: Number(elapsed), by: workerId, ts: Date.now(),
+            driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
+            outputFiles: outputFiles.length > 0 ? outputFiles : undefined
+          })
+          tasksDone++
+          totalTasksDone++
+          addDonated(1)
+          const preview = JSON.stringify(output).slice(0, 80)
+          console.log(`[<] Done in ${elapsed}ms | thread #${threadId} | ${preview}`)
+          console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
+        }).catch(async (err) => {
+          if (base && base.writable) {
+            await base.append({
+              type: 'result', taskId: taskEntry.id, error: err.message,
+              by: workerId, ts: Date.now()
+            })
+          }
+          console.log(`[!] Error: ${err.message}\n`)
+        })
+        poolPromises.push(p)
+      }
+
+      // Phase 3: run main-thread tasks sequentially (shell/file-I/O)
+      for (const { entry, deps } of mainBatch) {
+        batchWork = true
+        stopIdleTimer()
+        const codePreview = entry.taskType === 'shell'
+          ? `[SHELL] ${entry.cmd.trim().slice(0, 60)}`
+          : entry.code.trim().replace(/\s+/g, ' ').slice(0, 60)
+        console.log(`[>] Task ${entry.id.slice(0, 8)}… | ${codePreview} [main]`)
+
+        let inputDrive = null
+        if (entry.driveKey && store) {
+          if (!mountedDrives.has(entry.driveKey)) {
+            const d = new Hyperdrive(store, Buffer.from(entry.driveKey, 'hex'))
+            await d.ready()
+            mountedDrives.set(entry.driveKey, d)
+          }
+          inputDrive = mountedDrives.get(entry.driveKey)
+          for (let attempt = 0; attempt < 10; attempt++) {
+            await inputDrive.update()
+            if (inputDrive.version > 0) break
+            await new Promise(r => setTimeout(r, 500))
+          }
+        }
+
+        const t0 = performance.now()
+        try {
+          const output = await executeTask(entry, inputDrive, outputDrive, null, deps)
+          const elapsed = (performance.now() - t0).toFixed(2)
+
+          if (!base || !base.writable) {
+            console.log(`[!] Task ${entry.id.slice(0, 8)}… done but lost connection — result dropped`)
+            continue
+          }
+
+          const outputFiles = []
+          if (outputDrive) {
+            for await (const f of outputDrive.list('/')) {
+              outputFiles.push(f.key)
+            }
+          }
+
+          await base.append({
+            type: 'result', taskId: entry.id, output,
+            elapsed: Number(elapsed), by: workerId, ts: Date.now(),
+            driveKey: outputDrive ? outputDrive.key.toString('hex') : undefined,
+            outputFiles: outputFiles.length > 0 ? outputFiles : undefined
+          })
+          tasksDone++
+          totalTasksDone++
+          addDonated(1)
+          if (entry.taskType === 'shell' && output) {
+            const stdoutPreview = (output.stdout || '').trim().slice(0, 80)
+            console.log(`[<] Done in ${elapsed}ms | exit=${output.exitCode} | ${stdoutPreview}`)
+            if (output.timedOut) console.log(`    [!] Process timed out`)
+          } else {
+            const preview = JSON.stringify(output).slice(0, 80)
+            console.log(`[<] Done in ${elapsed}ms | ${preview}`)
+          }
+          console.log(`    (${tasksDone} for this requester, ${totalTasksDone} total)\n`)
+        } catch (err) {
+          if (base && base.writable) {
+            await base.append({
+              type: 'result', taskId: entry.id, error: err.message,
+              by: workerId, ts: Date.now()
+            })
+          }
+          console.log(`[!] Error: ${err.message}\n`)
+        }
+        resetIdleTimer()
+      }
+
+      // Wait for all pool tasks dispatched this cycle to finish
+      if (poolPromises.length > 0) {
+        await Promise.all(poolPromises)
+      }
+
+      didWork = didWork || batchWork
+      // Loop back to re-scan for tasks that replicated during this batch
     }
   } finally {
     processing = false
