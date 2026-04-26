@@ -656,13 +656,12 @@ rl.on('line', async (line) => {
         const taskId = chunkTaskIds[i]
         taskToJob.set(taskId, { jobId, chunkIndex: i })
 
-        // DAG jobs: no assignedTo — workers self-select based on dep availability
-        // Non-DAG jobs: round-robin for load distribution
-        const assignedTo = hasAnyDeps
-          ? null
-          : (jobRequires
-              ? pickWorkerForTask(jobRequires, workers)
-              : (workerIds.length > 0 ? workerIds[i % workerIds.length] : null))
+        // Round-robin assignment for all jobs (including DAG).
+        // DAG deps still enforced at worker side — assignedTo prevents two workers
+        // racing on the same task due to replication lag.
+        const assignedTo = jobRequires
+          ? pickWorkerForTask(jobRequires, workers)
+          : (workerIds.length > 0 ? workerIds[i % workerIds.length] : null)
 
         const chunk = chunks[i]
 
@@ -704,7 +703,7 @@ rl.on('line', async (line) => {
       pendingTaskCount += chunks.length
       addConsumed(chunks.length)
       broadcast()
-      console.log(`[>] ${chunks.length} subtasks posted${hasAnyDeps ? ' (DAG mode — dynamic assignment)' : ''}`)
+      console.log(`[>] ${chunks.length} subtasks posted${hasAnyDeps ? ' (DAG mode)' : ''}`)
 
     } catch (err) {
       console.log(`[!] Error loading job: ${err.message}`)
