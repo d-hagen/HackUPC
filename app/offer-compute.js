@@ -50,6 +50,7 @@ replicationSwarm.on('error', (err) => {
 })
 
 replicationSwarm.on('connection', (conn) => {
+  conn.on('error', () => {})
   if (store) store.replicate(conn)
 })
 
