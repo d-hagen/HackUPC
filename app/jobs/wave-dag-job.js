@@ -52,9 +52,16 @@ function makeBlock (chunk, value) {
 
 // Only (0,0) uses this — no deps
 export async function compute (chunk) {
-  const delay = chunk.delayMs * (0.5 + Math.random())
-  await new Promise(res => setTimeout(res, delay))
-  return makeBlock(chunk, 1)
+  const { N, startRow, endRow, startCol, endCol, row, col, delayMs } = chunk
+  await new Promise(res => setTimeout(res, delayMs * (0.5 + Math.random())))
+  const value = 1
+  const maxVal = 2 * (N - 1) || 1
+  const t = Math.min(1, (value - 1) / maxVal)
+  const r = Math.round(t < 0.5 ? 0 : (t - 0.5) * 2 * 255)
+  const g = Math.round(t < 0.25 ? t * 4 * 255 : t < 0.75 ? 255 : (1 - t) * 4 * 255)
+  const b = Math.round(t < 0.5 ? (1 - t * 2) * 255 : 0)
+  const rows = Array.from({ length: endRow - startRow }, () => new Array(endCol - startCol).fill([r, g, b]))
+  return { row, col, value, startRow, endRow, startCol, endCol, rows }
 }
 
 // All tasks with deps (every cell except (0,0))
