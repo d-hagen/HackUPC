@@ -54,9 +54,63 @@ function addLog (role, msg, level = 'info') {
   broadcast('log', entry)
 }
 
+// ── Multi-line result buffering ──
+let resultBuf = null // { taskId, by, lines: [] }
+
+function flushResultBuf () {
+  if (!resultBuf) return
+  const { taskId, by, lines } = resultBuf
+  resultBuf = null
+
+  let output = null
+  let elapsed = null
+  let error = null
+
+  for (const ln of lines) {
+    const t = ln.trim()
+    if (t.startsWith('Error:')) {
+      error = t.replace('Error:', '').trim()
+    } else if (t.match(/^\([\d.]+ms\)$/)) {
+      elapsed = t.replace(/[()ms]/g, '')
+    } else if (t.startsWith('Exit code:')) {
+      if (!output) output = ''
+      output += t + '\n'
+    } else if (t.startsWith('stdout:') || t.startsWith('stderr:')) {
+      if (!output) output = ''
+      output += t + '\n'
+    } else if (t.startsWith('[!]')) {
+      if (!output) output = ''
+      output += t + '\n'
+    } else if (t.startsWith('Return value:')) {
+      output = t.replace('Return value:', '').trim()
+    } else if (t) {
+      output = output ? output + '\n' + t : t
+    }
+  }
+
+  if (output) output = output.trim()
+  state.pendingTasks = Math.max(0, state.pendingTasks - 1)
+  state.resultsReceived++
+  const task = state.tasks.get(taskId)
+  if (task) { task.status = error ? 'error' : 'done'; task.by = by; task.elapsed = elapsed }
+  broadcast('result', { taskId, by, elapsed, error, output })
+  addLog('requester', `Result from ${by} (task ${taskId}…)${output ? ': ' + (output.length > 80 ? output.slice(0, 80) + '…' : output) : ''}`, error ? 'error' : 'success')
+}
+
 // ── Parse stdout from requester/worker processes ──
 function parseRequesterLine (line) {
   const s = line.trim()
+
+  // If we're buffering a multi-line result, check if this line is a continuation (indented)
+  if (resultBuf) {
+    if (!s) return // blank line inside result block, ignore
+    if (line.startsWith('    ') || line.startsWith('\t')) {
+      resultBuf.lines.push(s)
+      return
+    }
+    flushResultBuf()
+  }
+
   if (!s) return
 
   if (s.includes('Worker joined:') || s.includes('[+] Worker joined:')) {
@@ -84,29 +138,48 @@ function parseRequesterLine (line) {
   }
 
   if (s.includes('[>] Job') && s.includes('splitting')) {
-    const match = s.match(/Job (\S+)…?\s+splitting into (\d+) chunks/)
+    const match = s.match(/Job (\S+)…?\s+splitting into (\d+) chunks across (\d+|\?)/)
     if (match) {
       const jobId = match[1]
       const total = parseInt(match[2])
       state.jobs.set(jobId, { totalChunks: total, done: 0 })
       broadcast('job-posted', { jobId, totalChunks: total })
+      for (let i = 0; i < total; i++) {
+        const chunkId = `${jobId}-chunk-${i}`
+        state.tasks.set(chunkId, { id: chunkId, status: 'pending', preview: `Chunk ${i + 1}/${total}`, jobId })
+        broadcast('task-posted', { taskId: chunkId, preview: `Chunk ${i + 1}/${total}`, jobId })
+      }
+      state.pendingTasks += total
       addLog('requester', s, 'accent')
     }
     return
   }
 
   if (s.includes('subtasks posted')) {
-    state.pendingTasks += parseInt(s.match(/(\d+) subtasks/)?.[1] || 0)
     return
   }
 
   if (s.includes('[<] Chunk')) {
-    const match = s.match(/Chunk (\d+)\/(\d+) done \(by (\S+),\s*(\S+)ms/)
+    const match = s.match(/Chunk (\d+)\/(\d+) done \(by (\S+),\s*([\d.]+)ms/)
     if (match) {
       const chunkIndex = parseInt(match[1]) - 1
       const total = parseInt(match[2])
       const by = match[3]
       const elapsed = match[4]
+      // Find and update the job task entry
+      for (const [id, task] of state.tasks) {
+        if (task.jobId && task.preview === `Chunk ${chunkIndex + 1}/${total}` && task.status === 'pending') {
+          task.status = 'done'
+          task.by = by
+          task.elapsed = elapsed
+          broadcast('result', { taskId: id, by, elapsed, error: null })
+          break
+        }
+      }
+      const job = [...state.jobs.values()].find(j => j.totalChunks === total)
+      if (job) job.done++
+      state.pendingTasks = Math.max(0, state.pendingTasks - 1)
+      state.resultsReceived++
       broadcast('chunk-done', { chunkIndex, totalChunks: total, by, elapsed })
       addLog('requester', s, 'success')
     }
@@ -116,14 +189,15 @@ function parseRequesterLine (line) {
   if (s.includes('[<] Result from')) {
     const match = s.match(/Result from (\S+) \(task (\S+)…?\)/)
     if (match) {
-      const by = match[1]
-      const taskId = match[2]
-      state.pendingTasks = Math.max(0, state.pendingTasks - 1)
-      state.resultsReceived++
-      const task = state.tasks.get(taskId)
-      if (task) { task.status = 'done'; task.by = by }
-      broadcast('result', { taskId, by, error: null })
-      addLog('requester', s, 'success')
+      resultBuf = { taskId: match[2], by: match[1], lines: [] }
+    }
+    return
+  }
+
+  if (s.includes('[<] Task') && s.includes('completed (streamed')) {
+    const match = s.match(/Task (\S+)…?\s+completed \(streamed (\d+) chunks, ([\d.?]+)ms\)/)
+    if (match) {
+      resultBuf = { taskId: match[1], by: 'stream', lines: [] }
     }
     return
   }
@@ -326,6 +400,7 @@ function startRequester (opts = {}) {
   })
 
   requesterProc.on('close', code => {
+    flushResultBuf()
     requesterProc = null
     state.requesterLaunched = false
     broadcast('requester-stopped', { code })

@@ -152,9 +152,11 @@ function renderTaskList () {
       : task.status === 'running' ? 'badge-running'
       : task.status === 'error' ? 'badge-error' : 'badge-done'
     const label = { pending: 'Pending', running: 'Running', error: 'Error', done: 'Done' }[task.status]
+    const outputSnip = task.output ? String(task.output).split('\n')[0].slice(0, 60) : ''
     el.innerHTML = `
       <span class="task-badge ${badge}">${label}</span>
       <span class="task-preview">${escHtml(task.preview || task.id.slice(0, 16))}</span>
+      <span class="task-output">${escHtml(outputSnip)}</span>
       <span class="task-by">${escHtml(task.by ? task.by.slice(0, 12) : '')}</span>
       <span class="task-elapsed">${task.elapsed ? task.elapsed + 'ms' : ''}</span>
     `
@@ -278,7 +280,7 @@ function handleMsg (msg) {
     }
 
     case 'task-posted': {
-      state.tasks.set(payload.taskId, { id: payload.taskId, status: 'pending', preview: payload.preview })
+      state.tasks.set(payload.taskId, { id: payload.taskId, status: 'pending', preview: payload.preview, jobId: payload.jobId })
       $('stat-pending').textContent = ++state._pending || (state._pending = 1)
       renderTaskList()
       break
@@ -293,12 +295,19 @@ function handleMsg (msg) {
       t.status = payload.error ? 'error' : 'done'
       t.by = payload.by
       t.elapsed = payload.elapsed
+      if (payload.output) t.output = payload.output
       state.tasks.set(payload.taskId, t)
       renderTaskList()
       if (payload.error) {
         cliPrint(`Error: ${payload.error}`, 'error')
       } else {
-        cliPrint(`Result from ${payload.by || '?'}`, 'success')
+        const elapsed = payload.elapsed ? ` (${payload.elapsed}ms)` : ''
+        cliPrint(`Result from ${payload.by || '?'}${elapsed}`, 'success')
+        if (payload.output) {
+          for (const line of String(payload.output).split('\n')) {
+            cliPrint(`  ${line}`, 'info')
+          }
+        }
       }
       break
     }
